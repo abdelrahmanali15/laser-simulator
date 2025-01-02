@@ -21,10 +21,10 @@ import concurrent.futures
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor
 from scipy.interpolate import interp1d
+from tqdm import tqdm
 
 
 class SimulationConfig:
-
     def __init__(self):
         # Time settings
         self.T_STEADY = 10e-9  # Time to reach steady state [s]
@@ -156,7 +156,7 @@ class LaserModel:
         # Create time points
         t_sim = np.linspace(0, T_sim, num_points)
 
-        print(f"Processing frequency: {freq:.2e} Hz, T_sim: {T_sim:.2e} s")
+        # print(f"Processing frequency: {freq:.2e} Hz, T_sim: {T_sim:.2e} s")
 
         sol_ac = solve_ivp(
             lambda t, y: self.rate_equations_ac(
@@ -188,8 +188,6 @@ class LaserModel:
 
         # Calculate DC steady state
         N_dc, S_dc = self.calculate_steady_state(I_dc)
-
-        # Calculate total response for normalization
         _, S_tot = self.calculate_steady_state(I_dc + I_ac)
 
         # Frequency analysis parameters
@@ -199,25 +197,20 @@ class LaserModel:
             self.config.FREQ_POINTS
         )
 
-        params_list = [(freq, N_dc, S_dc, S_tot, I_dc, I_ac)
-                       for freq in f_ac]
+        params_list = [(freq, N_dc, S_dc, S_tot, I_dc, I_ac) for freq in f_ac]
 
         results_dict = {}
 
-        # Calculate frequency response
+        # Calculate frequency response with progress bar
         with ProcessPoolExecutor(max_workers=self.config.N_THREADS) as executor:
-            future_to_freq = {
-                executor.submit(self.calculate_single_frequency, params): params[0]
-                for params in params_list
-            }
-
-            for future in concurrent.futures.as_completed(future_to_freq):
+            futures = [executor.submit(
+                self.calculate_single_frequency, params) for params in params_list]
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Frequency Sweep"):
                 try:
                     freq, response, _ = future.result()
                     results_dict[freq] = response
                 except Exception as e:
-                    print(
-                        f"Error processing frequency {future_to_freq[future]}: {str(e)}")
+                    print(f"Error processing frequency: {str(e)}")
 
         frequencies = np.array(sorted(results_dict.keys()))
         response_amp = np.array([results_dict[f] for f in frequencies])
@@ -265,6 +258,24 @@ class LaserModel:
 
 
 def main():
+    """
+    Main function to initialize the simulation configuration and physics constants,
+    calculate the DC steady state, and analyze the frequency response for different
+    DC and AC currents. It also plots the transient response for specific frequencies.
+    Steps:
+    1. Initialize configuration and physics constants.
+    2. Calculate and print the DC steady state carrier and photon densities.
+    3. Plot the small signal frequency response for multiple DC currents with interpolation.
+    4. Plot the small signal frequency response for multiple AC currents with interpolation.
+    5. Plot the transient response for specific frequencies.
+    Plots:
+    - Small Signal Frequency Response vs. DC Current
+    - Small Signal Frequency Response vs. AC Current
+    - Transient response for specific frequencies
+    Saves plots as:
+    - 'plots/AC_multiple_large_signal.png'
+    - 'plots/AC_multiple_small_signal.png'
+    """
     # Initialize configuration and physics
     config = SimulationConfig()
     physics = PhysicsConstants()
@@ -352,7 +363,7 @@ def main():
                 dpi=300, bbox_inches='tight')
 
     # Plot specific frequencies transient response
-    test_frequencies = [1e9, 5e9, 11e9]
+    test_frequencies = [1.3e8, 1e9, 5e9, 11e9]
     print("\nAnalyzing specific frequencies...")
     for freq in test_frequencies:
         print(f"\nAnalyzing frequency: {freq / 1e9:.1f} GHz")
