@@ -62,8 +62,8 @@ class SimulationConfig:
         self.SOLVER_ATOL = 1e-12
 
         # Initial conditions
-        self.N0 = 2e18  # Initial carrier density [cm^-3]
-        self.S0 = 3.5e15  # Initial photon density [cm^-3]
+        self.N0 = 4.02e15  # Initial carrier density [cm^-3]
+        self.S0 = 2.59e5  # Initial photon density [cm^-3]
 
         # Analysis configurations
         self.DC_CURRENTS = [10e-3, 15e-3, 30e-3,
@@ -107,6 +107,28 @@ class LaserModel:
         I = I_dc + I_ac_amplitude * np.sin(2 * np.pi * freq * t)
         return self.rate_equations_dc(t, y, I)
 
+    def rate_equations_pulse(self, t, y,  I_dc, I_ac_amplitude, tau, m):
+        N, S = y
+        I = I_dc + I_ac_amplitude * np.exp(-((t / tau)**(2 * m)))
+        return self.rate_equations_dc(t, y, I)
+    # Compute steady-state N and S for I_dc
+
+    def steady_state(self, I_dc):
+        # Solve Rtot + G*S = I_dc / (q * Vact)
+        from scipy.optimize import fsolve
+
+        def equations(vars):
+            N, S = vars
+            Rtot = (self.physics.A_nr * N + self.physics.B *
+                    N**2 + self.physics.C * N**3)
+            G = (self.physics.Gamma * self.physics.v_g * self.physics.a_gain *
+                 max(N - self.physics.N_tr, 0)) / (1 + 1e-18 * S)
+            eq1 = (I_dc / (self.physics.q * self.physics.Vact)) - Rtot - G * S
+            eq2 = G * S - (S / self.physics.tau_p) + \
+                self.physics.beta_sp * self.physics.B * N**2
+            return [eq1, eq2]
+        return fsolve(equations, [self.config.N0, self.config.S0])
+
     def perform_dc_analysis(self, N_tr_temp=None):
         I_dc = np.linspace(0, self.physics.I_max, 100)
         N_dc = []
@@ -146,8 +168,8 @@ class LaserModel:
         I_values = np.array([15e-3, 20e-3,  self.physics.I_max])
         N_solutions = np.zeros((len(I_values), len(t)))
         S_solutions = np.zeros((len(I_values), len(t)))
-        N0 = 0
-        S0 = 0
+        N0 = self.config.N0
+        S0 = self.config.S0
         for i, I in enumerate(I_values):
             t_current = np.array([0, T_end])
             I_current = np.array([I, I])
@@ -553,6 +575,118 @@ class LaserModel:
         plt.savefig('plots/dc_characteristics.png',
                     dpi=300, bbox_inches='tight')
 
+    def simulate_supergaussian_pulse_chirping(self, pulse_duration=5e-9, m=1, I0=10e-3, chirp=True):
+        """
+        Simulates the effect of chirp in time domain with a super-Gaussian pulse.
+        Plots input pulse vs output field E(t) and its autocorrelation, with/without chirping.
+        """
+        import matplotlib.pyplot as plt
+        from scipy.integrate import cumtrapz
+        from scipy.signal import correlate
+
+        I_dc = 0
+        tau = pulse_duration / (2 * np.log(2)**(1/(2*m))) * 2
+        # tau = pulse_duration / (2 * np.log(2)**(1/(2*m)))
+        t = np.linspace(-5 * pulse_duration, 5 * pulse_duration, 100000)
+        I_t = I_dc + I0 * np.exp(-((t / tau)**(2 * m)))
+        N0_ss, S0_ss = self.steady_state(I_dc)
+        dt = t[1] - t[0]
+        sol_dc = solve_ivp(
+            lambda ts, y: self.rate_equations_dc(ts, y,  I_dc),
+            [t[0], t[-1]],
+            [self.config.N0, self.config.S0],
+            t_eval=t,
+            method='Radau',
+            rtol=1e-8,
+            atol=1e-12
+        )
+        N_dc_array = sol_dc.y[0]
+        N_dc = sol_dc.y[0][-1]
+        S_dc = sol_dc.y[1][-1]
+        print(f"Carrier density = {N_dc:.2e} cm⁻³")
+        print(f"Photon density = {S_dc:.2e} cm⁻³")
+        sol = solve_ivp(
+            lambda ts, y: self.rate_equations_pulse(ts, y,  I_dc, I0, tau, m),
+            [t[0], t[-1]],
+            [N_dc, S_dc],
+            t_eval=t,
+            method='Radau',
+            rtol=1e-10,
+            atol=1e-12
+        )
+        N = sol.y[0]
+        S = sol.y[1]
+
+        # Calculate field with optional chirp
+        deltaN = N - N_dc_array[-1]  # simple shift
+        if chirp:
+            delta_phi = cumtrapz(
+                0.003 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.Vact, t, initial=0
+            )
+        else:
+            delta_phi = np.zeros_like(t)
+
+        E_t = np.sqrt(S) * np.exp(1j * delta_phi)
+        autocorr = correlate(E_t, E_t, mode="full")
+        autocorr = autocorr[len(autocorr)//2:]
+        autocorr /= np.sum(np.abs(E_t)**2)
+
+        # Plot
+        fig, axs = plt.subplots(2, 1, figsize=(8, 8))
+        axs[0].plot(t*1e9, I_t*1e3, 'b-')
+        axs[0].set_title("Super-Gaussian Pulse Input (mA)")
+        axs[1].plot(t*1e9, np.real(E_t) / np.max(np.real(E_t)), 'r-')
+        axs[1].set_title("Output Field Real E(t) Normalized")
+        axs[1].legend(["Chirped" if chirp else "Unchirped"])
+        # axs[2].plot(np.arange(len(autocorr))*dt*1e12, np.abs(autocorr), 'g-')
+        # axs[2].set_title("Autocorrelation")
+        for ax in axs:
+            ax.set_xlabel("Time (ns)")
+            ax.grid(True)
+            ax.set_facecolor('#f8f8f8')
+        plt.tight_layout()
+
+        if chirp:
+            plt.savefig("plots/super_gaussian_pulse_chirped.png",
+                        dpi=300, bbox_inches='tight')
+        else:
+            plt.savefig("plots/super_gaussian_pulse_unchirped.png",
+                        dpi=300, bbox_inches='tight')
+
+        # field_spectrum = np.fft.fft(autocorr, n=2**18)
+        # # power_spectrum = np.abs(field_spectrum)**2
+        # power_spectrum = field_spectrum
+
+        # E_freq = np.abs(np.fft.fftshift(
+        #     np.fft.fft(autocorr, n=2**18)) / len(autocorr))
+
+        # # 7) Define FFT frequency axis
+        # freq_vector = np.fft.fftshift(np.fft.fftfreq(2**18, d=dt))
+
+        # plt.figure(figsize=(10, 6))
+        # plt.plot(freq_vector / 1e9, E_freq / np.max(E_freq), '-',
+        #          linewidth=1.5)
+        # plt.xlabel("Frequency (GHz)")
+        # plt.ylabel("Power (Normalized)")
+        # plt.title(f"$Chirp$ = {chirp}")
+        # plt.xlim([-8, 8])
+        # plt.ylim([0, 1])
+        # plt.grid(True, alpha=0.3)
+        # # Set the background to light gray for better contrast
+        # plt.gca().set_facecolor('#f8f8f8')
+        # plt.tight_layout()
+
+        # Plot power spectrum
+        # freq = np.fft.fftfreq(2**18, dt)
+        # plt.plot(freq * 1e-9, power_spectrum)
+        # plt.title("Power Spectrum of Output Field")
+        # plt.xlabel("Frequency (GHz)")
+        # plt.ylabel("Power Spectral Density")
+        # plt.xlim([-5, 5])
+        # plt.grid(True)
+        # plt.tight_layout()
+        # plt.show()
+
 
 def main():
     """
@@ -688,6 +822,8 @@ def main():
     # Calculate and plot
     laser.simulate_phase_modulation(I_dc, I_ac, freq)
 
+    test_supergaussian_pulse_chirping(laser, config)
+
     plt.show()
 
 
@@ -766,20 +902,32 @@ def test_transient_analysis_ramp(laser):
     laser.plot_ramp_response(t, N, S, t_steps, I_steps)
 
 
-# def main():
-#     config = SimulationConfig()
-#     physics = PhysicsConstants()
-#     laser = LaserModel(config, physics)
+def test_supergaussian_pulse_chirping(laser, config):
+    """
+    Test function for super-Gaussian pulse chirping simulation.
+    """
+    print("Testing super-Gaussian pulse chirping with chirp = True")
+    laser.simulate_supergaussian_pulse_chirping(chirp=True)
+    print("Testing super-Gaussian pulse chirping with chirp = False")
+    laser.simulate_supergaussian_pulse_chirping(chirp=False)
+    plt.show()
 
+
+def main():
+    config = SimulationConfig()
+    physics = PhysicsConstants()
+    laser = LaserModel(config, physics)
+    test_supergaussian_pulse_chirping(laser, config)
 #     # test_dc_steady_state(laser, config)
 #     # test_ac_analysis(laser, config)
 #     # test_specific_frequency(laser)
 #     test_dc_analysis(laser)
 #     # test_power_vs_current(laser)
-#     # test_transient_analysis_step(laser)
+    # test_transient_analysis_step(laser)
 #     # test_transient_analysis_ramp(laser)
 #     # test_phase_modulation_power_spectra(laser, config)
-#     plt.show()
+    plt.show()
+
 
 if __name__ == "__main__":
     import os
