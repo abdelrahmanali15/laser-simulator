@@ -55,7 +55,7 @@ class SimulationConfig:
         # Frequency analysis settings
         self.FREQ_MIN = 1e8  # Minimum frequency [Hz]
         self.FREQ_MAX = 1e10  # Maximum frequency [Hz]
-        self.FREQ_POINTS = 150  # Number of frequency points
+        self.FREQ_POINTS = 250  # Number of frequency points
 
         # Current settings
         self.I_DC = 30e-3  # Default DC bias current [A]
@@ -105,7 +105,7 @@ class LaserModel:
             self.physics.Gamma
             * self.physics.v_g
             * self.physics.a_gain
-            * (N - self.physics.N_tr)
+            * (N - N_tr)
         )
 
         # Saturation factor
