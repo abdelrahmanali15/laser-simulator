@@ -177,15 +177,15 @@ def main():
     physics = PhysicsConstants()
     laser = LaserModel(config, physics)
 
-    # run_dc_analysis(laser)
+    run_dc_analysis(laser)
     # method = 'peak2peak', 'hilbert', or 'fft'
     run_ac_analysis(laser, method='hilbert')
-    # run_specific_frequency_analysis(laser, I_ac=0.5e-3, I_dc=30e-3)
-    # run_dc_characteristics_analysis(laser)
-    # run_pi_analysis(laser)
-    # run_temperature_analysis(laser)
-    # run_step_and_ramp(laser)
-    # run_phase_and_pulse(laser)
+    run_specific_frequency_analysis(laser, I_ac=0.5e-3, I_dc=30e-3)
+    run_dc_characteristics_analysis(laser)
+    run_pi_analysis(laser)
+    run_temperature_analysis(laser)
+    run_step_and_ramp(laser)
+    run_phase_and_pulse(laser)
 
     plt.show()
 
