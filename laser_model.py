@@ -86,44 +86,62 @@ class LaserModel:
         self.config = config
         self.physics = physics
 
-    def rate_equations(self, t, y, t_current, I_current, N_tr_temp=None):
+    def rate_equations(self, t, y, I_dc,  N_tr_temp=None):
+        """
+        Computes the derivative of carrier and photon densities under DC current.
+        """
         N_tr = self.physics.N_tr if N_tr_temp is None else N_tr_temp
         N, S = y
-        I = np.interp(t, t_current, I_current)
-        Rtot = self.physics.A_nr * N + self.physics.B * N**2 + self.physics.C * N**3
-        G = self.physics.Gamma * self.physics.v_g * \
-            self.physics.a_gain * max(N - N_tr, 0)
-        dNdt = (I / (self.physics.q * self.physics.Vact)) - Rtot - G * S
-        dSdt = G * S - (S / self.physics.tau_p) + \
-            self.physics.beta_sp * self.physics.B * N**2
+
+        # Total recombination rate
+        R_tot = (
+            self.physics.A_nr * N
+            + self.physics.B * N**2
+            + self.physics.C * N**3
+        )
+
+        # Gain calculation
+        G = (
+            self.physics.Gamma
+            * self.physics.v_g
+            * self.physics.a_gain
+            * (N - self.physics.N_tr)
+        )
+
+        # Saturation factor
+        epsilon = 3.5e-18
+        G /= (1 + epsilon * S)
+
+        # Carrier density derivative
+        dNdt = (
+            (I_dc / (self.physics.q * self.physics.Vact))
+            - R_tot
+            - G * S
+        )
+
+        # Photon density derivative
+        dSdt = (
+            G * S
+            - (S / self.physics.tau_p)
+            + self.physics.beta_sp * self.physics.B * N**2
+        )
+
         return [dNdt, dSdt]
 
-    def rate_equations_dc(self, t, y, I_dc):
+    def rate_equations_ramp(self, t, y, t_current, I_current, N_tr_temp=None):
         N, S = y
-        Rtot = (self.physics.A_nr * N + self.physics.B * N ** 2 +
-                self.physics.C * N ** 3)
-
-        G = (self.physics.Gamma * self.physics.v_g *
-             self.physics.a_gain * (N - self.physics.N_tr))
-
-        epsilon = 3.5e-18  # Saturation factor
-        G = G / (1 + epsilon * S)  # Saturation
-
-        dNdt = ((I_dc / (self.physics.q * self.physics.Vact)) - Rtot - G * S)
-
-        dSdt = (G * S - (S / self.physics.tau_p) +
-                self.physics.beta_sp * self.physics.B * N ** 2)
-        return [dNdt, dSdt]
+        I = np.interp(t, t_current, I_current)
+        return self.rate_equations(t, y, I, N_tr_temp)
 
     def rate_equations_ac(self, t, y, freq, I_dc, I_ac_amplitude):
         N, S = y
         I = I_dc + I_ac_amplitude * np.real(np.exp(1j * 2 * np.pi * freq * t))
-        return self.rate_equations_dc(t, y, I)
+        return self.rate_equations(t, y, I)
 
     def rate_equations_pulse(self, t, y,  I_dc, I_ac_amplitude, tau, m):
         N, S = y
         I = I_dc + I_ac_amplitude * np.exp(-((t / tau)**(2 * m)))
-        return self.rate_equations_dc(t, y, I)
+        return self.rate_equations(t, y, I)
 
     def perform_dc_analysis(self, N_tr_temp=None):
         I_dc = np.linspace(0, self.physics.I_max, 100)
@@ -137,7 +155,7 @@ class LaserModel:
             t_current = np.array([0, T_steady])
             I_current = np.array([I, I])
             sol = solve_ivp(
-                self.rate_equations,
+                self.rate_equations_ramp,
                 [0, T_steady],
                 [N0, S0],
                 args=(t_current, I_current, N_tr_temp),
@@ -153,9 +171,6 @@ class LaserModel:
     def simulate_step_response(self):
         """
         Simulates laser response to step current inputs.
-
-        Returns:
-            tuple: (time array, carrier density solutions, photon density solutions, current values)
         """
         T_end = 20e-9
         num_points = 500
@@ -170,7 +185,7 @@ class LaserModel:
             t_current = np.array([0, T_end])
             I_current = np.array([I, I])
             sol = solve_ivp(
-                self.rate_equations,
+                self.rate_equations_ramp,
                 [0, T_end],
                 [N0, S0],
                 args=(t_current, I_current),
@@ -186,9 +201,6 @@ class LaserModel:
     def simulate_ramp_response(self):
         """
         Simulates laser response to a ramped current input.
-
-        Returns:
-            tuple: (time array, carrier density, photon density, time steps, current steps)
         """
         T_end = 20e-9
         num_points = 500
@@ -198,7 +210,7 @@ class LaserModel:
         N0 = 0
         S0 = 0
         sol = solve_ivp(
-            self.rate_equations,
+            self.rate_equations_ramp,
             [0, T_end],
             [N0, S0],
             args=(t_steps, I_steps),
@@ -213,7 +225,7 @@ class LaserModel:
         t_steady = np.linspace(0, self.config.T_STEADY,
                                self.config.STEADY_POINTS)
         sol_dc = solve_ivp(
-            lambda t, y: self.rate_equations_dc(t, y, I_dc),
+            lambda t, y: self.rate_equations(t, y, I_dc),
             [0, self.config.T_STEADY],
             [self.config.N0, self.config.S0],
             t_eval=t_steady,
@@ -226,14 +238,6 @@ class LaserModel:
     def sweep_small_signal_response(self, I_dc=None, I_ac=None, method='fft'):
         """
         Performs a small-signal frequency sweep using multiprocessing for faster computation,
-
-        Args:
-          I_dc (float, optional): DC current
-          I_ac (float, optional): AC amplitude
-          method (str, optional): 'peak2peak', 'hilbert', or 'fft'
-
-        Returns:
-          tuple: (frequencies, response_amplitudes_S, response_amplitudes_N)
         """
         I_dc = I_dc if I_dc is not None else self.config.I_DC
         I_ac = I_ac if I_ac is not None else self.config.I_AC
@@ -288,10 +292,6 @@ class LaserModel:
         - "hilbert": Uses the Hilbert transform for the envelope and doubles the mean amplitude.
           Advantages: Offers a smooth envelope of the signal, good for non-linear signals.
 
-        Args:
-          params (tuple): (freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude, method)
-        Returns:
-          tuple: (frequency, response_S, response_N, solver_result)
         """
         freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude, method = params
         cycles_required = 25
@@ -355,12 +355,6 @@ class LaserModel:
     def simulate_phase_modulation(self, I_dc, I_ac, freq):
         """
         Simulates phase modulation response of the laser for given DC and AC currents.
-
-        Args:
-            I_dc (float): DC bias current in Amperes
-            I_ac (list): List of AC modulation amplitudes in Amperes
-            freq (float): Modulation frequency in Hz
-
         Generates plots showing power spectra for different AC currents.
         """
         # 1) Generate time array
@@ -380,7 +374,7 @@ class LaserModel:
             print(f"Analyzing I_ac = {I * 1e3:.1f} mA")
             # 2) Solve DC-only
             sol0 = solve_ivp(
-                lambda t, y: self.rate_equations_dc(t, y, I_dc),
+                lambda t, y: self.rate_equations(t, y, I_dc),
                 [0, T_sim],
                 [self.config.N0, self.config.S0],
                 t_eval=t_sim,
@@ -463,7 +457,7 @@ class LaserModel:
         t = np.linspace(-5 * pulse_duration, 5 * pulse_duration, 100000)
         I_t = I_dc + I0 * np.exp(-((t / tau)**(2 * m)))
         sol_dc = solve_ivp(
-            lambda ts, y: self.rate_equations_dc(ts, y,  I_dc),
+            lambda ts, y: self.rate_equations(ts, y,  I_dc),
             [t[0], t[-1]],
             [self.config.N0, self.config.S0],
             t_eval=t,
@@ -535,12 +529,6 @@ class LaserModel:
     def analyze_frequency_response(self, freq, I_dc=None, I_ac=None):
         """
         Analyzes laser response at a specific frequency.
-
-        Args:
-            freq (float): Frequency to analyze in Hz
-            I_dc (float, optional): DC bias current in Amperes
-            I_ac (float, optional): AC modulation amplitude in Amperes
-
         Generates plots showing carrier and photon density variations.
         """
         I_dc = I_dc if I_dc is not None else self.config.I_DC
@@ -569,13 +557,6 @@ class LaserModel:
     def plot_ramp_response(self, t, N, S, t_steps, I_steps):
         """
         Plots the laser response to a ramped current input.
-
-        Args:
-            t (ndarray): Time points
-            N (ndarray): Carrier density values
-            S (ndarray): Photon density values
-            t_steps (ndarray): Time points for current steps
-            I_steps (ndarray): Current values at each step
         """
         plt.figure(figsize=(12, 8))
         plt.suptitle('Transient Response for Ramp current', fontsize=16)
@@ -601,12 +582,6 @@ class LaserModel:
     def plot_step_response(self, t, N_solutions, S_solutions, I_values):
         """
         Plots the laser response to step current inputs.
-
-        Args:
-            t (ndarray): Time points
-            N_solutions (ndarray): Carrier density solutions for each current
-            S_solutions (ndarray): Photon density solutions for each current
-            I_values (ndarray): Current values used
         """
         colors = plt.cm.viridis(np.linspace(0, 1, len(I_values)))
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
@@ -635,10 +610,6 @@ class LaserModel:
     def plot_PI_curve(self, P_solutions, I_values):
         """
         Plots the power-current (P-I) characteristic curve.
-
-        Args:
-            P_solutions (ndarray): Power values
-            I_values (ndarray): Current values
         """
         plt.figure(figsize=(10, 6))
         P_steady = P_solutions
@@ -654,13 +625,6 @@ class LaserModel:
     def plot_optical_spectrum(self, ax, freqs, fft_magnitude, I_ac, color):
         """
         Plots normalized optical power spectrum.
-
-        Args:
-            ax (matplotlib.axes.Axes): Axes to plot on
-            freqs (ndarray): Frequency points
-            fft_magnitude (ndarray): FFT magnitude values
-            I_ac (float): AC current amplitude
-            color (str): Color for the plot
         """
         ax.plot(freqs / 1e9, fft_magnitude / np.max(fft_magnitude), '-',
                 color=color, linewidth=1.5)
