@@ -25,7 +25,7 @@ A comprehensive Python-based simulator for semiconductor laser diodes, implement
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/laser-simulator.git
+git clone https://github.com/abdelrahmanali15/laser-simulator.git
 cd laser-simulator
 ```
 
