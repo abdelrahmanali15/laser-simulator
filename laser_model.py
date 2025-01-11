@@ -1,3 +1,5 @@
+# Description: This file contains the laser model class and its methods for simulating the laser response to different inputs.
+
 from concurrent.futures import ProcessPoolExecutor
 import concurrent.futures
 from tqdm import tqdm
@@ -13,6 +15,7 @@ from scipy.signal import savgol_filter
 from scipy.integrate import cumtrapz
 from scipy.signal import correlate
 from scipy.fft import fft, fftfreq, fftshift
+from scipy.signal import hilbert
 
 
 class PhysicsConstants:
@@ -24,7 +27,7 @@ class PhysicsConstants:
         self.w = 2e-4  # Width [cm]
         self.d = 0.2e-4  # Thickness [cm]
         self.Gamma = 0.3  # Confinement factor
-        self.a_gain = 2.5e-16  # Gain cross-section [cm^2]
+        self.a_gain = 2.5e-16
         self.N_tr = 1e18  # Transparency carrier density [cm^-3]
         self.A_nr = 1e8  # Non-radiative recombination [s^-1]
         self.B = 1e-10  # Radiative recombination [cm^3/s]
@@ -39,6 +42,7 @@ class PhysicsConstants:
         self.I_max = 50e-3  # Maximum current [A]
         self.beta_c = 5  # Added for phase modulation
         self.G_n = 5.62e3  # Added for phase modulation
+        self.epsilon = 0.1  # Saturation factor
 
 
 class SimulationConfig:
@@ -54,8 +58,8 @@ class SimulationConfig:
         self.FREQ_POINTS = 150  # Number of frequency points
 
         # Current settings
-        self.I_DC = 50e-3  # Default DC bias current [A]
-        self.I_AC = 1e-3  # Default AC modulation amplitude [A]
+        self.I_DC = 30e-3  # Default DC bias current [A]
+        self.I_AC = 0.5e-3  # Default AC modulation amplitude [A]
 
         # Solver settings
         self.N_THREADS = 8
@@ -69,8 +73,9 @@ class SimulationConfig:
         self.S0 = 2.59e5  # Initial photon density [cm^-3]
 
         # Analysis configurations
-        self.DC_CURRENTS = [10e-3, 25e-3, 50e-3, 80e-3]  # DC currents [A]
-        self.AC_CURRENTS = [0.1e-3, 2e-3, 4e-3, 6e-3]  # AC currents [A]
+        self.DC_CURRENTS = [25e-3, 50e-3, 80e-3]  # DC currents [A]
+        # self.AC_CURRENTS = [0.1e-3, 2e-3, 4e-3, 6e-3]  # AC currents [A]
+        self.AC_CURRENTS = [0.1e-3, 6e-3]  # AC currents [A]
 
         # interpolation settings
         self.INTERP_POINTS = 1000  # Number of points for interpolation
@@ -97,9 +102,15 @@ class LaserModel:
         N, S = y
         Rtot = (self.physics.A_nr * N + self.physics.B * N ** 2 +
                 self.physics.C * N ** 3)
-        G = (self.physics.Gamma * self.physics.v_g * self.physics.a_gain *
-             max(N - self.physics.N_tr, 0)) / (1 + 1e-18 * S)
+
+        G = (self.physics.Gamma * self.physics.v_g *
+             self.physics.a_gain * (N - self.physics.N_tr))
+
+        epsilon = 3.5e-18  # Saturation factor
+        G = G / (1 + epsilon * S)  # Saturation
+
         dNdt = ((I_dc / (self.physics.q * self.physics.Vact)) - Rtot - G * S)
+
         dSdt = (G * S - (S / self.physics.tau_p) +
                 self.physics.beta_sp * self.physics.B * N ** 2)
         return [dNdt, dSdt]
@@ -206,22 +217,23 @@ class LaserModel:
             [0, self.config.T_STEADY],
             [self.config.N0, self.config.S0],
             t_eval=t_steady,
-            method='Radau',
+            method='BDF',
             rtol=self.config.SOLVER_RTOL,
             atol=self.config.SOLVER_ATOL
         )
         return sol_dc.y[0][-1], sol_dc.y[1][-1]
 
-    def sweep_small_signal_response(self, I_dc=None, I_ac=None):
+    def sweep_small_signal_response(self, I_dc=None, I_ac=None, method='fft'):
         """
-        Performs a small-signal frequency sweep.
+        Performs a small-signal frequency sweep using multiprocessing for faster computation,
 
         Args:
-            I_dc (float, optional): DC current
-            I_ac (float, optional): AC amplitude
+          I_dc (float, optional): DC current
+          I_ac (float, optional): AC amplitude
+          method (str, optional): 'peak2peak', 'hilbert', or 'fft'
 
         Returns:
-            tuple: (frequencies, response_amplitudes)
+          tuple: (frequencies, response_amplitudes_S, response_amplitudes_N)
         """
         I_dc = I_dc if I_dc is not None else self.config.I_DC
         I_ac = I_ac if I_ac is not None else self.config.I_AC
@@ -235,64 +247,110 @@ class LaserModel:
             np.log10(self.config.FREQ_MAX),
             self.config.FREQ_POINTS
         )
-        params_list = [(freq, N_dc, S_dc, S_tot, I_dc, I_ac) for freq in f_ac]
+        params_list = [(freq, N_dc, S_dc, S_tot, I_dc, I_ac, method)
+                       for freq in f_ac]
         results_dict = {}
         with ProcessPoolExecutor(max_workers=self.config.N_THREADS) as executor:
-            futures = [executor.submit(
-                self.simulate_single_frequency_response, params) for params in params_list]
-            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Frequency Sweep"):
+            futures = [
+                executor.submit(
+                    self.simulate_single_frequency_response, params)
+                for params in params_list
+            ]
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="Frequency Sweep"
+            ):
                 try:
-                    freq, response, _ = future.result()
-                    results_dict[freq] = response
+                    freq, response_S, response_N, _ = future.result()
+                    results_dict[freq] = (response_S, response_N)
                 except Exception as e:
                     print(f"Error processing frequency: {str(e)}")
         frequencies = np.array(sorted(results_dict.keys()))
-        response_amp = np.array([results_dict[f] for f in frequencies])
-        return frequencies, response_amp
+        response_amp_S = np.array([results_dict[f][0] for f in frequencies])
+        response_amp_N = np.array([results_dict[f][1] for f in frequencies])
+        return frequencies, response_amp_S, response_amp_N
 
     def simulate_single_frequency_response(self, params):
         """
-        Simulates a single modulation frequency and returns the response.
+        Simulates a single modulation frequency response using different methods:
+
+        - "fft": Uses FFT at the modulation frequency.
+          Advantages: Captures linear response accurately, handles noise well, large frequency range.
+          Disadvantages: can suffer from leakage.
+          Best for: when linearity is assumed.
+
+        - "peak2peak": Uses the peak-to-peak value in the time domain.
+          Advantages: clearly reflects time-domain extremes.
+          Disadvantages: Sensitive to any transient overshoot.
+          Best for: Quick estimation of amplitude.
+
+        - "hilbert": Uses the Hilbert transform for the envelope and doubles the mean amplitude.
+          Advantages: Offers a smooth envelope of the signal, good for non-linear signals.
 
         Args:
-            params (tuple): (freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude)
-
+          params (tuple): (freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude, method)
         Returns:
-            tuple: (frequency, response, solver_result)
+          tuple: (frequency, response_S, response_N, solver_result)
         """
-        freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude = params
-        cycles_required = 20
-        T_sim = cycles_required / freq
-        # T_sim = T_sim * 2  # Increase simulation time for better accuracy
-        num_points = max(self.config.MIN_TOTAL_POINTS,
-                         int(freq * T_sim * self.config.MIN_POINTS_PER_PERIOD))
+        freq, N_dc, S_dc, S_tot, I_dc, I_ac_amplitude, method = params
+        cycles_required = 25
+        T_sim = (cycles_required / freq) * 2
+        num_points = max(
+            self.config.MIN_TOTAL_POINTS,
+            int(freq * T_sim * self.config.MIN_POINTS_PER_PERIOD)
+        )
         num_points = 1000
         t_sim = np.linspace(0, T_sim, num_points)
+
         sol_ac = solve_ivp(
             lambda t, y: self.rate_equations_ac(
                 t, y, freq, I_dc, I_ac_amplitude),
             [0, T_sim],
             [N_dc, S_dc],
             t_eval=t_sim,
-            method='Radau',
+            method='BDF',
             rtol=self.config.SOLVER_RTOL,
             atol=self.config.SOLVER_ATOL
         )
-        cycles_to_analyze = 5
+
+        # Last portion for analysis
+        cycles_to_analyze = 10
         points_per_cycle = num_points / (cycles_required * 2)
         last_n_points = int(points_per_cycle * cycles_to_analyze)
-        S_last_portion = sol_ac.y[1][-last_n_points:]
-        t_last_portion = t_sim[-last_n_points:]
+        S_last = sol_ac.y[1][-last_n_points:]
+        N_last = sol_ac.y[0][-last_n_points:]
+        t_last = t_sim[-last_n_points:]
 
-        # FFT for response amplitude
-        S_fft = fft(S_last_portion)
-        freqs = fftfreq(len(S_last_portion), d=(
-            t_last_portion[1] - t_last_portion[0]))
-        driving_index = np.argmin(np.abs(freqs - freq))
-        response_amplitude = 2 * np.abs(S_fft[driving_index])
+        # Select method to compute response amplitude
+        if method == 'peak2peak':
+            response_S = np.ptp(S_last)
+            response_N = np.ptp(N_last)
+        elif method == 'hilbert':
+            analytic_signal_s = hilbert(S_last - np.mean(S_last))
+            analytic_signal_n = hilbert(N_last - np.mean(N_last))
+            response_S = 2 * np.mean(np.abs(analytic_signal_s))
+            response_N = 2 * np.mean(np.abs(analytic_signal_n))
+        else:
+            window = np.hanning(len(S_last))
+            S_windowed = (S_last - np.mean(S_last)) * window
+            fft_values_s = fft(S_windowed)
+            fft_freqs_s = fftfreq(len(S_windowed), d=(t_last[1] - t_last[0]))
+            window_corr = 2 / np.mean(window)
+            fft_mag_s = np.abs(fft_values_s) * \
+                (2.0 / len(S_windowed)) * window_corr
+            freq_idx_s = np.argmin(np.abs(fft_freqs_s - freq))
+            response_S = fft_mag_s[freq_idx_s]
 
-        response = response_amplitude
-        return freq, response, sol_ac
+            N_windowed = (N_last - np.mean(N_last)) * window
+            fft_values_n = fft(N_windowed)
+            fft_freqs_n = fftfreq(len(N_windowed), d=(t_last[1] - t_last[0]))
+            fft_mag_n = np.abs(fft_values_n) * \
+                (2.0 / len(N_windowed)) * window_corr
+            freq_idx_n = np.argmin(np.abs(fft_freqs_n - freq))
+            response_N = fft_mag_n[freq_idx_n]
+
+        return freq, response_S, response_N, sol_ac
 
     def simulate_phase_modulation(self, I_dc, I_ac, freq):
         """
@@ -306,7 +364,7 @@ class LaserModel:
         Generates plots showing power spectra for different AC currents.
         """
         # 1) Generate time array
-        cycles_required = 200
+        cycles_required = 150
         T_sim = (cycles_required / freq) * 2
         num_points = 5000
         t_sim = np.linspace(0, T_sim, num_points)
@@ -326,7 +384,7 @@ class LaserModel:
                 [0, T_sim],
                 [self.config.N0, self.config.S0],
                 t_eval=t_sim,
-                method='Radau',
+                method='BDF',
                 rtol=self.config.SOLVER_RTOL,
                 atol=self.config.SOLVER_ATOL
             )
@@ -338,7 +396,7 @@ class LaserModel:
                 [0, T_sim],
                 [self.config.N0, self.config.S0],
                 t_eval=t_sim,
-                method='Radau',
+                method='BDF',
                 rtol=self.config.SOLVER_RTOL,
                 atol=self.config.SOLVER_ATOL
             )
@@ -352,7 +410,7 @@ class LaserModel:
             dt = t_sim[1] - t_sim[0]
 
             delta_phi = cumtrapz(
-                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.Vact * 1.5,
+                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.Vact,
                 t,
                 initial=0
             )
@@ -367,7 +425,9 @@ class LaserModel:
             delta_phi = savgol_filter(
                 delta_phi_half, window_length=51, polyorder=3)
 
-            E_t = np.sqrt(S_half) * np.real(np.exp(1j * delta_phi_half))
+            E_t = np.sqrt(S_half) * np.exp(1j * delta_phi_half)
+            E_t_real = np.real(E_t)
+            E_t_imag = np.imag(E_t)
 
             # Calculate autocorrelation
             autocorr = correlate(E_t, E_t, mode="full")
@@ -376,10 +436,10 @@ class LaserModel:
             autocorr = autocorr / signal_power
 
             # 6) FFT of autocorrelation
-            E_freq = np.abs(fftshift(fft(autocorr, n=2**18)) / len(autocorr))
+            E_freq = np.abs(fftshift(fft(autocorr, n=2**17)) / len(autocorr))
 
             # 7) Define FFT frequency axis
-            freq_vector = fftshift(fftfreq(2**18, d=dt))
+            freq_vector = fftshift(fftfreq(2**17, d=dt))
 
             # Plot in the corresponding subplot
             self.plot_optical_spectrum(
@@ -407,7 +467,7 @@ class LaserModel:
             [t[0], t[-1]],
             [self.config.N0, self.config.S0],
             t_eval=t,
-            method='Radau',
+            method='BDF',
             rtol=1e-8,
             atol=1e-12
         )
@@ -421,7 +481,7 @@ class LaserModel:
             [t[0], t[-1]],
             [N_dc, S_dc],
             t_eval=t,
-            method='Radau',
+            method='BDF',
             rtol=1e-10,
             atol=1e-12
         )
@@ -487,9 +547,8 @@ class LaserModel:
         I_ac = I_ac if I_ac is not None else self.config.I_AC
         N_dc, S_dc = self.calculate_steady_state(I_dc)
         _, S_tot = self.calculate_steady_state(I_dc + I_ac)
-        _, _, sol_ac = self.simulate_single_frequency_response(
-            (freq, N_dc, S_dc, S_tot, I_dc, I_ac)
-        )
+        _, _, _, sol_ac = self.simulate_single_frequency_response(
+            (freq, N_dc, S_dc, S_tot, I_dc, I_ac, 'fft'))
         fig, ax1 = plt.subplots(figsize=(12, 8))
         ax2 = ax1.twinx()
         ln1 = ax1.plot(sol_ac.t * 1e9, sol_ac.y[0] - N_dc, 'b-',
@@ -619,164 +678,27 @@ class LaserModel:
         plt.suptitle('DC Characteristics', fontsize=16, y=1.02)
         plt.subplot(2, 1, 1)
         plt.plot(I_dc * 1e3, N_dc / N_tr, 'b-', linewidth=2)
+        plt.axvline(x=15.8, color='gray', linestyle='--', linewidth=1)
         plt.xlabel('Current (mA)', fontsize=12)
         plt.ylabel('Carrier Density (N/N$_{tr}$)', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.title('Carrier Density vs Current', fontsize=14)
         plt.subplot(2, 1, 2)
         plt.plot(I_dc * 1e3, S_dc, 'g-', linewidth=2)
+        plt.axvline(x=15.8, color='gray', linestyle='--', linewidth=1)
         plt.xlabel('Current (mA)', fontsize=12)
         plt.ylabel('Photon Density (cm$^{-3}$)', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.title('Photon Density vs Current', fontsize=14)
+
+        # Add secondary y-axis in log scale
+        ax = plt.gca()
+        ax2 = ax.twinx()
+        ax2.plot(I_dc * 1e3, S_dc, 'r--', linewidth=1)
+        ax2.set_yscale('log')
+        ax2.set_ylabel('Photon Density (log scale)', fontsize=12, color='r')
+        ax2.tick_params(axis='y', labelcolor='r')
+
         plt.tight_layout()
         plt.savefig('plots/dc_characteristics.png',
                     dpi=300, bbox_inches='tight')
-
-
-def main():
-    """
-    Main function to run laser simulations and generate analysis plots.
-    Performs DC, AC, transient, and phase modulation analysis.
-    """
-    config = SimulationConfig()
-    physics = PhysicsConstants()
-    laser = LaserModel(config, physics)
-
-    print("Calculating DC steady state...")
-    N_dc, S_dc = laser.calculate_steady_state(config.I_DC)
-    print(f"Carrier density = {N_dc:.2e} cm⁻³")
-    print(f"Photon density = {S_dc:.2e} cm⁻³")
-
-    print("\nAC: Analyzing multiple DC currents...")
-    plt.figure(figsize=(12, 8))
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
-
-    for i, I_dc_value in enumerate(config.DC_CURRENTS):
-        print(f"\nAnalyzing DC current: {I_dc_value * 1000:.1f} mA")
-        freq_result, response_result = laser.sweep_small_signal_response(
-            I_dc=I_dc_value)
-        response_db = 20 * np.log10(response_result / response_result[1])
-        interp_func = interp1d(freq_result, response_db, kind='cubic')
-        freq_smooth = np.logspace(
-            np.log10(freq_result[0]),
-            np.log10(freq_result[-1]),
-            config.INTERP_POINTS
-        )
-        response_smooth = interp_func(freq_smooth)
-        plt.semilogx(freq_smooth, response_smooth,
-                     color=colors[i],
-                     linewidth=2,
-                     label=f'I_DC = {I_dc_value * 1000:.1f} mA')
-
-    plt.grid(True, which="both", ls="-", alpha=0.2)
-    plt.grid(True, which="major", ls="-", alpha=0.5)
-    plt.xlabel('Frequency (Hz)', fontsize=12)
-    plt.ylabel('Response (dB)', fontsize=12)
-    plt.title('Small Signal Frequency Response vs. DC Current',
-              fontsize=14, pad=20)
-    plt.legend(title='Bias Current', title_fontsize=12, fontsize=10,
-               loc='lower left', bbox_to_anchor=(0.02, 0.02))
-    plt.tight_layout()
-    plt.savefig('plots/AC_multiple_large_signal.png',
-                dpi=300, bbox_inches='tight')
-
-    print("\nAC: Analyzing multiple AC currents...")
-    plt.figure(figsize=(12, 8))
-
-    for i, I_ac_value in enumerate(config.AC_CURRENTS):
-        print(f"\nAnalyzing AC current: {I_ac_value * 1000:.1f} mA")
-        freq_result, response_result = laser.sweep_small_signal_response(
-            I_ac=I_ac_value)
-        response_db = 20 * np.log10(response_result/response_result[1])
-        interp_func = interp1d(freq_result, response_db, kind='cubic')
-        freq_smooth = np.logspace(
-            np.log10(freq_result[0]),
-            np.log10(freq_result[-1]),
-            config.INTERP_POINTS
-        )
-        response_smooth = interp_func(freq_smooth)
-        plt.semilogx(freq_smooth, response_smooth,
-                     color=colors[i],
-                     linewidth=2,
-                     label=f'I_AC = {I_ac_value * 1000:.1f} mA')
-
-    plt.grid(True, which="both", ls="-", alpha=0.2)
-    plt.grid(True, which="major", ls="-", alpha=0.5)
-    plt.xlabel('Frequency (Hz)', fontsize=12)
-    plt.ylabel('Response (dB)', fontsize=12)
-    plt.title('Small Signal Frequency Response vs. AC Current',
-              fontsize=14, pad=20)
-    plt.legend(title='AC Current', title_fontsize=12, fontsize=10,
-               loc='lower left', bbox_to_anchor=(0.02, 0.02))
-    plt.tight_layout()
-    plt.savefig('plots/AC_multiple_small_signal.png',
-                dpi=300, bbox_inches='tight')
-
-    test_frequencies = [1.3e8, 1e9, 5e9, 11e9]
-    print("\nSmall signal transient of specific frequencies...")
-    for freq in test_frequencies:
-        print(f"\nAnalyzing frequency: {freq / 1e9:.1f} GHz")
-        laser.analyze_frequency_response(freq)
-    # plt.show()
-
-    print(f"\nAnalyzing DC Charactaristics...")
-    I_dc, N_dc, S_dc = laser.perform_dc_analysis()
-    laser.plot_dc_characteristics(I_dc, N_dc, S_dc)
-
-    print(f"\nAnalyzing PI Charactaristics...")
-    P_out = laser.calculate_optical_power(S_dc)
-    laser.plot_PI_curve(P_out, I_dc)
-
-    plt.figure(figsize=(12, 8))
-    plt.suptitle('Temperature Dependence of Output Power', fontsize=16)
-    T = np.linspace(200, 350, 6)
-    N_tr0 = 1e18
-
-    for i, temp in enumerate(T):
-        N_tr = N_tr0 * np.exp((temp-300)/50)
-        I_dc, N_dc, S_dc = laser.perform_dc_analysis(N_tr)
-        P_out = laser.calculate_optical_power(S_dc)
-        plt.plot(I_dc * 1e3, P_out * 1e3,
-                 label=f'T = {temp:.0f} K',
-                 linewidth=2)
-
-    plt.xlabel("Current (mA)", fontsize=12)
-    plt.ylabel("Output Power (mW)", fontsize=12)
-    plt.title("Output Power vs Current at Different Temperatures")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper left', fontsize=10, framealpha=0.9,
-               title='Temperature', title_fontsize=12)
-    plt.tight_layout()
-    plt.savefig('plots/figure4_temperature_dependencies.png',
-                dpi=300, bbox_inches='tight')
-
-    print(f"\nSimulating Step Response...")
-    t, solutions_N, solutions_S, I_values = laser.simulate_step_response()
-    laser.plot_step_response(t, solutions_N, solutions_S, I_values)
-
-    print(f"\nSimulating Ramp Response...")
-    t, N, S, t_steps, I_steps = laser.simulate_ramp_response()
-    laser.plot_ramp_response(t, N, S, t_steps, I_steps)
-
-    print(f"\nAnalyzing Phase Modulation...")
-    # Parameters
-    I_dc = 30e-3
-    freq = 1e9
-    I_ac = [2e-3, 4e-3, 6e-3, 8e-3]
-
-    # Calculate and plot
-    laser.simulate_phase_modulation(I_dc, I_ac, freq)
-
-    print("Testing super-Gaussian pulse chirping with chirp = True")
-    laser.simulate_supergaussian_pulse_chirping(chirp=True)
-    print("Testing super-Gaussian pulse chirping with chirp = False")
-    laser.simulate_supergaussian_pulse_chirping(chirp=False)
-
-    plt.show()
-
-
-if __name__ == "__main__":
-    import os
-    os.makedirs('plots', exist_ok=True)
-    main()
