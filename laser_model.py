@@ -27,6 +27,7 @@ class PhysicsConstants:
         self.w = 2e-4  # Width [cm]
         self.d = 0.2e-4  # Thickness [cm]
         self.gamma = 0.3  # Confinement factor
+        self.R = ((self.n_g - 1) / (self.n_g + 1))**2  # Mirror reflectivity
         self.a_gain = 2.5e-16
         self.N_tr = 1e18  # Transparency carrier density [cm^-3]
         self.A_nr = 1e8  # Non-radiative recombination [s^-1]
@@ -520,8 +521,8 @@ class LaserModel:
         """
         Calculates optical output power from photon density.
         """
-        R = self.physics.gamma**2  # Mirror reflectivity
-        P_out = -np.log(R) * (
+        # R = self.physics.gamma**2  # Mirror reflectivity
+        P_out = -np.log(self.physics.R) * (
             self.physics.v_g *
             self.physics.volume /
             (2 * self.physics.L)) * h * self.physics.nu * S
