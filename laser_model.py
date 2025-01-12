@@ -26,7 +26,7 @@ class PhysicsConstants:
         self.L = 250e-4  # Length [cm]
         self.w = 2e-4  # Width [cm]
         self.d = 0.2e-4  # Thickness [cm]
-        self.Gamma = 0.3  # Confinement factor
+        self.gamma = 0.3  # Confinement factor
         self.a_gain = 2.5e-16
         self.N_tr = 1e18  # Transparency carrier density [cm^-3]
         self.A_nr = 1e8  # Non-radiative recombination [s^-1]
@@ -35,14 +35,13 @@ class PhysicsConstants:
         self.beta_sp = 1e-4  # Spontaneous emission factor
         self.tau_p = 1.6e-12  # Photon lifetime [s]
         self.q = 1.602e-19  # Electron charge [C]
-        self.Vact = self.L * self.w * self.d  # Active region volume [cm^3]
+        self.volume = self.L * self.w * self.d  # Active region volume [cm^3]
         self.lambda_laser = 1.3e-6  # Wavelength [m]
         # Optical frequency [Hz]
         self.nu = self.c_0 / (self.lambda_laser * 1e2)
         self.I_max = 50e-3  # Maximum current [A]
-        self.beta_c = 5  # Added for phase modulation
+        self.beta_c = 5  # line width enhancement factor
         self.G_n = 5.62e3  # Added for phase modulation
-        self.epsilon = 0.1  # Saturation factor
 
 
 class SimulationConfig:
@@ -102,7 +101,7 @@ class LaserModel:
 
         # Gain calculation
         G = (
-            self.physics.Gamma
+            self.physics.gamma
             * self.physics.v_g
             * self.physics.a_gain
             * (N - N_tr)
@@ -114,7 +113,7 @@ class LaserModel:
 
         # Carrier density derivative
         dNdt = (
-            (I_dc / (self.physics.q * self.physics.Vact))
+            (I_dc / (self.physics.q * self.physics.volume))
             - R_tot
             - G * S
         )
@@ -404,7 +403,7 @@ class LaserModel:
             dt = t_sim[1] - t_sim[0]
 
             delta_phi = cumtrapz(
-                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.Vact,
+                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.volume,
                 t,
                 initial=0
             )
@@ -486,7 +485,7 @@ class LaserModel:
         deltaN = N - N_dc_array[-1]
         if chirp:
             delta_phi = cumtrapz(
-                0.003 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.Vact, t, initial=0
+                0.003 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.volume, t, initial=0
             )
         else:
             delta_phi = np.zeros_like(t)
@@ -521,9 +520,11 @@ class LaserModel:
         """
         Calculates optical output power from photon density.
         """
-        R = self.physics.Gamma**2  # Mirror reflectivity
-        P_out = -np.log(R) * (self.physics.v_g * self.physics.Vact /
-                              (2 * self.physics.L)) * h * self.physics.nu * S
+        R = self.physics.gamma**2  # Mirror reflectivity
+        P_out = -np.log(R) * (
+            self.physics.v_g *
+            self.physics.volume /
+            (2 * self.physics.L)) * h * self.physics.nu * S
         return P_out
 
     def analyze_frequency_response(self, freq, I_dc=None, I_ac=None):
