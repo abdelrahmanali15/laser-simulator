@@ -21,13 +21,13 @@ from scipy.signal import hilbert
 class PhysicsConstants:
     def __init__(self):
         self.c_0 = 3e10  # Speed of light [cm/s]
-        self.n_g = 4  # Group index
-        self.v_g = self.c_0 / self.n_g  # Group velocity [cm/s]
+        self.ng = 4  # Group index
+        self.v_g = self.c_0 / self.ng  # Group velocity [cm/s]
         self.L = 250e-4  # Length [cm]
         self.w = 2e-4  # Width [cm]
         self.d = 0.2e-4  # Thickness [cm]
         self.gamma = 0.3  # Confinement factor
-        self.R = ((self.n_g - 1) / (self.n_g + 1))**2  # Mirror reflectivity
+        self.R = ((self.ng - 1) / (self.ng + 1))**2  # Mirror reflectivity
         self.a_gain = 2.5e-16
         self.N_tr = 1e18  # Transparency carrier density [cm^-3]
         self.A_nr = 1e8  # Non-radiative recombination [s^-1]
@@ -521,12 +521,24 @@ class LaserModel:
         """
         Calculates optical output power from photon density.
         """
-        # R = self.physics.gamma**2  # Mirror reflectivity
         P_out = -np.log(self.physics.R) * (
             self.physics.v_g *
             self.physics.volume /
             (2 * self.physics.L)) * h * self.physics.nu * S
         return P_out
+
+    def calculate_threshold_current(self, I_dc=30e-3):
+        """
+        Calculates the threshold current for the laser.
+        """
+        N_th, _ = self.calculate_steady_state(I_dc=I_dc)
+
+        tau_c = 1 / (self.physics.A_nr + self.physics.B *
+                     N_th + self.physics.C * N_th**2)
+
+        I_th = N_th * self.physics.volume * self.physics.q / tau_c
+
+        return I_th
 
     def analyze_frequency_response(self, freq, I_dc=None, I_ac=None):
         """
@@ -640,29 +652,36 @@ class LaserModel:
 
     def plot_dc_characteristics(self, I_dc, N_dc, S_dc, N_tr_temp=None):
         N_tr = self.physics.N_tr if N_tr_temp is None else N_tr_temp
+        I_th = self.calculate_threshold_current(self.config.I_DC)
         plt.figure(figsize=(12, 8))
         plt.suptitle('DC Characteristics', fontsize=16, y=1.02)
         plt.subplot(2, 1, 1)
-        plt.plot(I_dc * 1e3, N_dc / N_tr, 'b-', linewidth=2)
-        plt.axvline(x=15.8, color='gray', linestyle='--', linewidth=1)
+        plt.plot(I_dc * 1e3, N_dc / N_tr, 'b-',
+                 linewidth=2, label='Carrier Density')
+        plt.axvline(x=I_th * 1e3, color='gray', linestyle='--',
+                    linewidth=1, label=f'Threshold Current ({I_th * 1e3:.2f} mA)')
         plt.xlabel('Current (mA)', fontsize=12)
         plt.ylabel('Carrier Density (N/N$_{tr}$)', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.title('Carrier Density vs Current', fontsize=14)
+        plt.legend()
         plt.subplot(2, 1, 2)
-        plt.plot(I_dc * 1e3, S_dc, 'g-', linewidth=2)
-        plt.axvline(x=15.8, color='gray', linestyle='--', linewidth=1)
+        plt.plot(I_dc * 1e3, S_dc, 'g-', linewidth=2, label='Photon Density')
+        plt.axvline(x=I_th * 1e3, color='gray', linestyle='--',
+                    linewidth=1, label=f'Threshold Current ({I_th * 1e3:.2f} mA)')
         plt.xlabel('Current (mA)', fontsize=12)
         plt.ylabel('Photon Density (cm$^{-3}$)', fontsize=12)
         plt.grid(True, alpha=0.3)
         plt.title('Photon Density vs Current', fontsize=14)
+        plt.legend()
 
         # Add secondary y-axis in log scale
         ax = plt.gca()
         ax2 = ax.twinx()
         ax2.plot(I_dc * 1e3, S_dc, 'r--', linewidth=1)
         ax2.set_yscale('log')
-        ax2.set_ylabel('Photon Density (log scale)', fontsize=12, color='r')
+        ax2.set_ylabel('Photon Density (log scale)',
+                       fontsize=12, color='r')
         ax2.tick_params(axis='y', labelcolor='r')
 
         plt.tight_layout()
