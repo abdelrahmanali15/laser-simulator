@@ -357,6 +357,9 @@ class LaserModel:
         """
         Simulates phase modulation response of the laser for given DC and AC currents.
         Generates plots showing power spectra for different AC currents.
+        δ(dφ/dt) = (1/2) * β_c * G_N * δN (linear model)
+        G_n = Γ * v_g * gain_coff / V
+        Ref: https://www.fiberoptics4sale.com/blogs/wave-optics/modulation-response-of-semiconductor-lasers
         """
         # 1) Generate time array
         cycles_required = 150
