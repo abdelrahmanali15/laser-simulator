@@ -38,6 +38,9 @@ def run_ac_analysis(laser, method='fft'):  # method = 'peak2peek', 'hilbert', or
                          linewidth=2, label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_s_smooth)]/1e9:.2f} GHz')
         ax_n_dc.semilogx(freq_smooth, resp_n_smooth, color=colors[i],
                          linewidth=2, label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_n_smooth)]/1e9:.2f} GHz')
+        freq1, freq2 = laser.calculate_relaxation_oscillation(I_dc_value)
+        print(
+            f"Estimated Relaxation frequency for I_DC = {I_dc_value * 1000:.1f} : {freq1/1e9:.2f} or {freq2/1e9:.2f} GHz")
 
     ax_s_dc.grid(True, which="both", ls="-", alpha=0.2)
     ax_s_dc.grid(True, which="major", ls="-", alpha=0.5)
@@ -178,7 +181,7 @@ def main():
     laser = LaserModel(config, physics)
 
     run_dc_analysis(laser)
-    # # method = 'peak2peak', 'hilbert', or 'fft'
+    # method = 'peak2peak', 'hilbert', or 'fft'
     run_ac_analysis(laser, method='hilbert')
     # run_specific_frequency_analysis(laser, I_ac=0.5e-3, I_dc=30e-3)
     run_dc_characteristics_analysis(laser)

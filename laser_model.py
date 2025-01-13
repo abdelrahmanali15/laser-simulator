@@ -28,7 +28,7 @@ class PhysicsConstants:
         self.d = 0.2e-4  # Thickness [cm]
         self.gamma = 0.3  # Confinement factor
         self.R = ((self.ng - 1) / (self.ng + 1))**2  # Mirror reflectivity
-        self.a_gain = 2.5e-16
+        self.gain_coff = 2.5e-16
         self.N_tr = 1e18  # Transparency carrier density [cm^-3]
         self.A_nr = 1e8  # Non-radiative recombination [s^-1]
         self.B = 1e-10  # Radiative recombination [cm^3/s]
@@ -42,7 +42,8 @@ class PhysicsConstants:
         self.nu = self.c_0 / (self.lambda_laser * 1e2)
         self.I_max = 50e-3  # Maximum current [A]
         self.beta_c = 5  # line width enhancement factor
-        self.G_n = 5.62e3  # Added for phase modulation
+        # https://www.fiberoptics4sale.com/blogs/wave-optics/transient-response-of-semiconductor-lasers
+        self.G_n = self.gamma * self.v_g * self.gain_coff / self.volume  # Gain coefficient
 
 
 class SimulationConfig:
@@ -104,7 +105,7 @@ class LaserModel:
         G = (
             self.physics.gamma
             * self.physics.v_g
-            * self.physics.a_gain
+            * self.physics.gain_coff
             * (N - N_tr)
         )
 
@@ -539,6 +540,39 @@ class LaserModel:
         I_th = N_th * self.physics.volume * self.physics.q / tau_c
 
         return I_th
+
+    def calculate_relaxation_oscillation(self, I_dc):
+        """
+        Returns the relaxation oscillation frequency using (6-4-25) and the additional
+        formula from (6-4-27), where n₀ is N_tr:
+
+        (6-4-27) Ω_R = sqrt(
+          [ (1 + Γ⋅v_g⋅a⋅n₀⋅τ_p ) / (τ_e⋅τ_p ) ] ⋅ [ (I / I_th) - 1 ])
+
+        (6-4-25) Ω_R = sqrt(G_N * (I - I_th) / q )
+
+        Ref: https://www.fiberoptics4sale.com/blogs/wave-optics/transient-response-of-semiconductor-lasers
+        """
+
+        # Calculate freq relaxation using (6-4-25)
+        I_th = self.calculate_threshold_current(I_dc)
+        freq_1 = np.sqrt(
+            self.physics.G_n * (I_dc - I_th) / self.physics.q) / (2*np.pi)
+
+        # Calculate freq relaxation using (6-4-27)
+        N_th, _ = self.calculate_steady_state(I_dc=I_dc)
+        tau_c = 1 / (self.physics.A_nr + self.physics.B *
+                     N_th + self.physics.C * N_th**2)
+
+        n0 = self.physics.N_tr
+        numerator = (1 + self.physics.gamma * self.physics.v_g *
+                     self.physics.gain_coff * n0 * self.physics.tau_p)
+        denominator = tau_c * self.physics.tau_p
+        current_ratio = (I_dc / I_th) - 1
+        freq_2 = np.sqrt((numerator / denominator)
+                         * current_ratio) / (2*np.pi)
+
+        return freq_1, freq_2
 
     def analyze_frequency_response(self, freq, I_dc=None, I_ac=None):
         """
