@@ -155,7 +155,7 @@ def run_step_and_ramp(laser):
     laser.plot_ramp_response(t, N, S, t_steps, I_steps)
 
 
-def run_phase_and_pulse(laser):
+def run_phase_modulation(laser):
     print("\nAnalyzing Phase Modulation...")
     # Parameters
     I_dc = 30e-3
@@ -165,10 +165,14 @@ def run_phase_and_pulse(laser):
     # Calculate and plot
     laser.simulate_phase_modulation(I_dc, I_ac, freq)
 
+
+def run_pulse_chirping(laser):
     print("Testing super-Gaussian pulse chirping with chirp = True")
     laser.simulate_supergaussian_pulse_chirping(chirp=True)
+    laser.simulate_gain_switched_pulse(chirp=True)
     print("Testing super-Gaussian pulse chirping with chirp = False")
     laser.simulate_supergaussian_pulse_chirping(chirp=False)
+    laser.simulate_gain_switched_pulse(chirp=False)
 
 
 def main():
@@ -188,7 +192,8 @@ def main():
     run_pi_analysis(laser)
     run_temperature_analysis(laser)
     run_step_and_ramp(laser)
-    run_phase_and_pulse(laser)
+    run_phase_modulation(laser)
+    run_pulse_chirping(laser)
 
     plt.show()
 

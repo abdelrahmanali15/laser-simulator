@@ -452,16 +452,17 @@ class LaserModel:
     def simulate_supergaussian_pulse_chirping(self, pulse_duration=5e-9, m=1, I0=10e-3, chirp=True):
         """
         Simulates the effect of chirp in time domain with a super-Gaussian pulse.
-        Plots input pulse vs output field E(t) and its autocorrelation, with/without chirping.
-        """
+        Plots input pulse vs output field E(t), its autocorrelation, and chirp vs time.
 
+        Ref: https://www.fiberoptics4sale.com/blogs/wave-optics/modulation-response-of-semiconductor-lasers
+        """
         I_dc = 0
         tau = pulse_duration / (2 * np.log(2)**(1/(2*m))) * 2
-        # tau = pulse_duration / (2 * np.log(2)**(1/(2*m)))
         t = np.linspace(-5 * pulse_duration, 5 * pulse_duration, 100000)
         I_t = I_dc + I0 * np.exp(-((t / tau)**(2 * m)))
+
         sol_dc = solve_ivp(
-            lambda ts, y: self.rate_equations(ts, y,  I_dc),
+            lambda ts, y: self.rate_equations(ts, y, I_dc),
             [t[0], t[-1]],
             [self.config.N0, self.config.S0],
             t_eval=t,
@@ -472,10 +473,9 @@ class LaserModel:
         N_dc_array = sol_dc.y[0]
         N_dc = sol_dc.y[0][-1]
         S_dc = sol_dc.y[1][-1]
-        print(f"DC Carrier density = {N_dc:.2e} cm⁻³")
-        print(f"DC Photon density = {S_dc:.2e} cm⁻³")
+
         sol = solve_ivp(
-            lambda ts, y: self.rate_equations_pulse(ts, y,  I_dc, I0, tau, m),
+            lambda ts, y: self.rate_equations_pulse(ts, y, I_dc, I0, tau, m),
             [t[0], t[-1]],
             [N_dc, S_dc],
             t_eval=t,
@@ -486,7 +486,7 @@ class LaserModel:
         N = sol.y[0]
         S = sol.y[1]
 
-        # Calculate field with  chirp
+        # Calculate field with chirp
         deltaN = N - N_dc_array[-1]
         if chirp:
             delta_phi = cumtrapz(
@@ -500,26 +500,127 @@ class LaserModel:
         autocorr = autocorr[len(autocorr)//2:]
         autocorr /= np.sum(np.abs(E_t)**2)
 
-        # Plot
-        fig, axs = plt.subplots(2, 1, figsize=(8, 8))
-        axs[0].plot(t*1e9, I_t*1e3, 'b-')
+        # Plotting
+        fig, axs = plt.subplots(2, 1, figsize=(8, 12))
+        axs[0].plot(t * 1e9, I_t * 1e3, 'b-')
         axs[0].set_title("Super-Gaussian Pulse Input (mA)")
-        axs[1].plot(t*1e9, E_t / np.max(E_t), 'r-')
+        axs[0].set_ylabel("Current (mA)")
+
+        axs[1].plot(t * 1e9, E_t / np.max(E_t), 'r-')
         axs[1].set_title("Output Field Real E(t) Normalized")
+        axs[1].set_ylabel("Field (normalized)")
         axs[1].legend(["Chirped" if chirp else "Unchirped"])
 
         for ax in axs:
-            ax.set_xlabel("Time (ns)")
+            ax.grid(True)
+            ax.set_facecolor('#f8f8f8')
+
+        plt.tight_layout()
+
+        if chirp:
+            plt.savefig("plots/super_gaussian_pulse_with_chirp.png",
+                        dpi=300, bbox_inches='tight')
+        else:
+            plt.savefig("plots/super_gaussian_pulse_without_chirp.png",
+                        dpi=300, bbox_inches='tight')
+
+    def simulate_gain_switched_pulse(self, pulse_duration=200e-12, m=1, chirp=True):
+        """
+        Simulates gain switching of a laser with a 200-ps current pulse 3 times the threshold.
+        Plots the pulse shape, output field E(t), and frequency chirp.
+
+        Ref: https://www.fiberoptics4sale.com/blogs/wave-optics/modulation-response-of-semiconductor-lasers
+        """
+        # Define the current pulse
+        t = np.linspace(-5 * pulse_duration, 5 * pulse_duration, 100000)
+        I_th = self.calculate_threshold_current(I_dc=self.config.I_DC)
+        I0 = 3 * I_th  # 3 times threshold
+        # Gaussian pulse width
+        tau = pulse_duration / (2 * np.log(2)**(1/(2*m)))
+        # Gaussian pulse current (3 times threshold)
+        I_pulse = I0 * np.exp(-(t / tau) ** 2)
+
+        # Solve for DC steady-state
+        I_dc = I_th
+        sol_dc = solve_ivp(
+            lambda ts, y: self.rate_equations(ts, y, I_dc),
+            [t[0], t[-1]],
+            [self.config.N0, self.config.S0],
+            t_eval=t,
+            method='BDF',
+            rtol=1e-8,
+            atol=1e-12
+        )
+        N_dc_array = sol_dc.y[0]
+        N_dc = sol_dc.y[0][-1]
+        S_dc = sol_dc.y[1][-1]
+        print(f"DC Carrier density = {N_dc:.2e} cm⁻³")
+        print(f"DC Photon density = {S_dc:.2e} cm⁻³")
+
+        # Solve rate equations with the current pulse
+        sol = solve_ivp(
+            lambda ts, y: self.rate_equations_pulse(ts, y, I_dc, I0, tau, m),
+            [t[0], t[-1]],
+            [N_dc, S_dc],
+            t_eval=t,
+            method='BDF',
+            rtol=1e-10,
+            atol=1e-12
+        )
+        N = sol.y[0]
+        S = sol.y[1]
+
+        # Calculate field with chirp
+        deltaN = N - N_dc_array[-1]
+        if chirp:
+            delta_phi = cumtrapz(
+                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.volume, t, initial=0
+            )
+            chirp_inst = np.gradient(delta_phi, t) / (2 * np.pi)  # Chirp in Hz
+            chirp_inst += -120e9  # Add initial offset for negative chirp
+        else:
+            delta_phi = np.zeros_like(t)
+            chirp_inst = np.zeros_like(t)
+
+        E_t = np.sqrt(S) * np.real(np.exp(1j * delta_phi))
+
+        # Plot results
+        fig, axs = plt.subplots(3, 1, figsize=(8, 10))
+        axs[0].plot(t * 1e12, I_pulse * 1e3, 'b-')
+        axs[0].set_title("Current Pulse (mA)")
+        axs[0].set_ylabel("Current (mA)")
+
+        axs[1].plot(t * 1e12, E_t / np.max(E_t), 'r-')
+        axs[1].set_title("Output Field E(t) Normalized")
+        axs[1].legend(["Chirped" if chirp else "Unchirped"])
+
+        axs[2].plot(t * 1e12, chirp_inst * 1e-9, 'g-')
+        axs[2].set_title("Frequency Chirp vs Time")
+        axs[2].set_ylabel("Chirp (GHz)")
+        axs[2].set_xlabel("Time (ps)")
+        axs[2].legend(["Chirped" if chirp else "Unchirped"])
+
+        axs[2].set_xlim([-1.5 * pulse_duration * 1e12,
+                        1.5 * pulse_duration * 1e12])
+        axs[2].set_ylim([-60, 80])
+        axs[0].set_xlim([-1.5 * pulse_duration * 1e12,
+                        1.5 * pulse_duration * 1e12])
+        axs[1].set_xlim([-1.5 * pulse_duration * 1e12,
+                        1.5 * pulse_duration * 1e12])
+
+        for ax in axs:
             ax.grid(True)
             ax.set_facecolor('#f8f8f8')
         plt.tight_layout()
 
         if chirp:
-            plt.savefig("plots/super_gaussian_pulse_chirped.png",
+            plt.savefig("plots/gain_switched_pulse_with_chirp.png",
                         dpi=300, bbox_inches='tight')
         else:
-            plt.savefig("plots/super_gaussian_pulse_unchirped.png",
+            plt.savefig("plots/gain_switched_pulse_without_chirp.png",
                         dpi=300, bbox_inches='tight')
+
+        # plt.show()
 
     def calculate_optical_power(self, S):
         """
