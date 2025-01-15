@@ -17,6 +17,8 @@ from scipy.signal import correlate
 from scipy.fft import fft, fftfreq, fftshift
 from scipy.signal import hilbert
 
+from plotting_utils import setup_plotting_style, create_figure, style_axis
+
 
 class PhysicsConstants:
     def __init__(self):
@@ -367,87 +369,96 @@ class LaserModel:
         num_points = 5000
         t_sim = np.linspace(0, T_sim, num_points)
 
-        # Create figure with subplots for each current value
-        fig, axs = plt.subplots(len(I_ac), 1, figsize=(10, 3*len(I_ac)))
+        # Create figures with subplots for each current value, maximum of two subplots per figure
+        num_subplots_per_fig = 2
+        num_figs = int(np.ceil(len(I_ac) / num_subplots_per_fig))
 
         selected_color_map = 'plasma'
-        colors = plt.colormaps.get_cmap(selected_color_map)(
-            np.linspace(0, 1, len(I_ac)))
+        # colors = plt.colormaps.get_cmap(selected_color_map)(
+        #     np.linspace(0, 1, len(I_ac)))
 
-        for idx, I in enumerate(I_ac):
-            print(f"Analyzing I_ac = {I * 1e3:.1f} mA")
-            # 2) Solve DC-only
-            sol0 = solve_ivp(
-                lambda t, y: self.rate_equations(t, y, I_dc),
-                [0, T_sim],
-                [self.config.N0, self.config.S0],
-                t_eval=t_sim,
-                method='BDF',
-                rtol=self.config.SOLVER_RTOL,
-                atol=self.config.SOLVER_ATOL
-            )
-            N_dc_only = sol0.y[0]
+        for fig_idx in range(num_figs):
+            fig, axs = create_figure(
+                rows=num_subplots_per_fig, cols=1, is_subplot=True)
+            for subplot_idx in range(num_subplots_per_fig):
+                idx = fig_idx * num_subplots_per_fig + subplot_idx
+                if idx >= len(I_ac):
+                    break
+                I = I_ac[idx]
+                print(f"Analyzing I_ac = {I * 1e3:.1f} mA")
+                # 2) Solve DC-only
+                sol0 = solve_ivp(
+                    lambda t, y: self.rate_equations(t, y, I_dc),
+                    [0, T_sim],
+                    [self.config.N0, self.config.S0],
+                    t_eval=t_sim,
+                    method='BDF',
+                    rtol=self.config.SOLVER_RTOL,
+                    atol=self.config.SOLVER_ATOL
+                )
+                N_dc_only = sol0.y[0]
 
-            # 3) Solve with DC+AC
-            sol = solve_ivp(
-                lambda t, y: self.rate_equations_ac(t, y, freq, I_dc, I),
-                [0, T_sim],
-                [self.config.N0, self.config.S0],
-                t_eval=t_sim,
-                method='BDF',
-                rtol=self.config.SOLVER_RTOL,
-                atol=self.config.SOLVER_ATOL
-            )
-            N_ac = sol.y[0]
-            S_ac = sol.y[1]
+                # 3) Solve with DC+AC
+                sol = solve_ivp(
+                    lambda t, y: self.rate_equations_ac(t, y, freq, I_dc, I),
+                    [0, T_sim],
+                    [self.config.N0, self.config.S0],
+                    t_eval=t_sim,
+                    method='BDF',
+                    rtol=self.config.SOLVER_RTOL,
+                    atol=self.config.SOLVER_ATOL
+                )
+                N_ac = sol.y[0]
+                S_ac = sol.y[1]
 
-            # 4) Compute deltaN(t) and deltaPhi(t)
-            deltaN = N_ac - N_dc_only
-            t = t_sim[len(deltaN)//2:]
-            deltaN = deltaN[len(deltaN)//2:]
-            dt = t_sim[1] - t_sim[0]
+                # 4) Compute deltaN(t) and deltaPhi(t)
+                deltaN = N_ac - N_dc_only
+                t = t_sim[len(deltaN)//2:]
+                deltaN = deltaN[len(deltaN)//2:]
+                dt = t_sim[1] - t_sim[0]
 
-            delta_phi = cumtrapz(
-                0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.volume,
-                t,
-                initial=0
-            )
-            # delta_phi = np.mod(delta_phi, 2 * np.pi)  # Wrap to [0, 2π)
+                delta_phi = cumtrapz(
+                    0.5 * self.physics.beta_c * self.physics.G_n * deltaN * self.physics.volume,
+                    t,
+                    initial=0
+                )
+                # delta_phi = np.mod(delta_phi, 2 * np.pi)  # Wrap to [0, 2π)
 
-            # 5) E(t) calculations
-            S_half = S_ac[len(S_ac)//2:]
-            delta_phi_half = delta_phi
+                # 5) E(t) calculations
+                S_half = S_ac[len(S_ac)//2:]
+                delta_phi_half = delta_phi
 
-            # Apply smoothing filter
-            S_half = savgol_filter(S_half, window_length=51, polyorder=3)
-            delta_phi = savgol_filter(
-                delta_phi_half, window_length=51, polyorder=3)
+                # Apply smoothing filter
+                S_half = savgol_filter(S_half, window_length=51, polyorder=3)
+                delta_phi = savgol_filter(
+                    delta_phi_half, window_length=51, polyorder=3)
 
-            E_t = np.sqrt(S_half) * np.exp(1j * delta_phi_half)
-            E_t_real = np.real(E_t)
-            E_t_imag = np.imag(E_t)
+                E_t = np.sqrt(S_half) * np.exp(1j * delta_phi_half)
+                E_t_real = np.real(E_t)
+                E_t_imag = np.imag(E_t)
 
-            # Calculate autocorrelation
-            autocorr = correlate(E_t, E_t, mode="full")
-            autocorr = autocorr[len(autocorr) // 2:]
-            signal_power = np.sum(np.abs(E_t)**2)
-            autocorr = autocorr / signal_power
+                # Calculate autocorrelation
+                autocorr = correlate(E_t, E_t, mode="full")
+                autocorr = autocorr[len(autocorr) // 2:]
+                signal_power = np.sum(np.abs(E_t)**2)
+                autocorr = autocorr / signal_power
 
-            # 6) FFT of autocorrelation
-            E_freq = np.abs(fftshift(fft(autocorr, n=2**17)) / len(autocorr))
+                # 6) FFT of autocorrelation
+                E_freq = np.abs(
+                    fftshift(fft(autocorr, n=2**17)) / len(autocorr))
 
-            # 7) Define FFT frequency axis
-            freq_vector = fftshift(fftfreq(2**17, d=dt))
+                # 7) Define FFT frequency axis
+                freq_vector = fftshift(fftfreq(2**17, d=dt))
 
-            # Plot in the corresponding subplot
-            self.plot_optical_spectrum(
-                axs[idx], freq_vector, E_freq, I, colors[idx])
+                # Plot in the corresponding subplot
+                self.plot_optical_spectrum(
+                    axs[subplot_idx], freq_vector, E_freq, I)
 
-        # Adjust layout and save
-        axs[3].set_xlabel("Frequency (GHz)")
-        plt.tight_layout()
-        plt.savefig("plots/phase_modulation_power_spectra.png",
-                    dpi=300, bbox_inches='tight')
+                # Adjust layout and save
+                style_axis(axs[-1], xlabel="Frequency (GHz)")
+                plt.tight_layout()
+                plt.savefig(f"plots/phase_modulation_power_spectra_{fig_idx + 1}.png",
+                            dpi=300, bbox_inches='tight')
 
     def simulate_supergaussian_pulse_chirping(self, pulse_duration=5e-9, m=1, I0=10e-3, chirp=True):
         """
@@ -456,6 +467,7 @@ class LaserModel:
 
         Ref: https://www.fiberoptics4sale.com/blogs/wave-optics/modulation-response-of-semiconductor-lasers
         """
+        colors = setup_plotting_style()
         I_dc = 0
         tau = pulse_duration / (2 * np.log(2)**(1/(2*m))) * 2
         t = np.linspace(-5 * pulse_duration, 5 * pulse_duration, 100000)
@@ -500,29 +512,25 @@ class LaserModel:
         autocorr = autocorr[len(autocorr)//2:]
         autocorr /= np.sum(np.abs(E_t)**2)
 
-        # Plotting
-        fig, axs = plt.subplots(2, 1, figsize=(8, 12))
-        axs[0].plot(t * 1e9, I_t * 1e3, 'b-')
-        axs[0].set_title("Super-Gaussian Pulse Input (mA)")
-        axs[0].set_ylabel("Current (mA)")
+        fig, axs = create_figure(rows=2, cols=1, is_subplot=True)
 
-        axs[1].plot(t * 1e9, E_t / np.max(E_t), 'r-')
-        axs[1].set_title("Output Field Real E(t) Normalized")
-        axs[1].set_ylabel("Field (normalized)")
+        axs[0].plot(t * 1e9, I_t * 1e3, linewidth=2)
+        style_axis(axs[0],
+                   ylabel="Current (mA)",
+                   title="Super-Gaussian Pulse Input (mA)",
+                   legend=False)
+
+        axs[1].plot(t * 1e9, E_t / np.max(E_t), linewidth=2)
+        style_axis(axs[1],
+                   ylabel="Field (normalized)",
+                   xlabel="Time (ns)",
+                   title="Output Field Real E(t) Normalized")
         axs[1].legend(["Chirped" if chirp else "Unchirped"])
 
-        for ax in axs:
-            ax.grid(True)
-            ax.set_facecolor('#f8f8f8')
-
         plt.tight_layout()
-
-        if chirp:
-            plt.savefig("plots/super_gaussian_pulse_with_chirp.png",
-                        dpi=300, bbox_inches='tight')
-        else:
-            plt.savefig("plots/super_gaussian_pulse_without_chirp.png",
-                        dpi=300, bbox_inches='tight')
+        suffix = "with_chirp" if chirp else "without_chirp"
+        plt.savefig(
+            f"plots/super_gaussian_pulse_{suffix}.png", dpi=300, bbox_inches='tight')
 
     def simulate_gain_switched_pulse(self, pulse_duration=200e-12, m=1, chirp=True):
         """
@@ -584,41 +592,55 @@ class LaserModel:
 
         E_t = np.sqrt(S) * np.real(np.exp(1j * delta_phi))
 
-        # Plot results
-        fig, axs = plt.subplots(3, 1, figsize=(8, 10))
-        axs[0].plot(t * 1e12, I_pulse * 1e3, 'b-')
-        axs[0].set_title("Current Pulse (mA)")
-        axs[0].set_ylabel("Current (mA)")
+        # Figure 1: Input pulse and Output Field E(t)
+        fig1, axs1 = create_figure(rows=2, cols=1, is_subplot=True)
 
-        axs[1].plot(t * 1e12, E_t / np.max(E_t), 'r-')
-        axs[1].set_title("Output Field E(t) Normalized")
-        axs[1].legend(["Chirped" if chirp else "Unchirped"])
+        axs1[0].plot(t * 1e12, I_pulse * 1e3, linewidth=2)
+        style_axis(axs1[0],
+                   ylabel="Current (mA)",
+                   title="Current Pulse (mA)",
+                   legend=False)
+        axs1[0].set_xlim([-1.5 * pulse_duration * 1e12,
+                         1.5 * pulse_duration * 1e12])
 
-        axs[2].plot(t * 1e12, chirp_inst * 1e-9, 'g-')
-        axs[2].set_title("Frequency Chirp vs Time")
-        axs[2].set_ylabel("Chirp (GHz)")
-        axs[2].set_xlabel("Time (ps)")
-        axs[2].legend(["Chirped" if chirp else "Unchirped"])
+        axs1[1].plot(t * 1e12, E_t / np.max(E_t), linewidth=2)
+        style_axis(axs1[1],
+                   xlabel="Time (ps)",
+                   ylabel="Field (normalized)",
+                   title="Output Field E(t) Normalized",
+                   legend=False)
+        axs1[1].set_xlim([-1.5 * pulse_duration * 1e12,
+                         1.5 * pulse_duration * 1e12])
+        axs1[1].legend(["Chirped" if chirp else "Unchirped"])
 
-        axs[2].set_xlim([-1.5 * pulse_duration * 1e12,
-                        1.5 * pulse_duration * 1e12])
-        axs[2].set_ylim([-60, 80])
-        axs[0].set_xlim([-1.5 * pulse_duration * 1e12,
-                        1.5 * pulse_duration * 1e12])
-        axs[1].set_xlim([-1.5 * pulse_duration * 1e12,
-                        1.5 * pulse_duration * 1e12])
+        suffix = "with_chirp" if chirp else "without_chirp"
+        plt.savefig(
+            f"plots/gain_switched_pulse_fig1_{suffix}.png", dpi=300, bbox_inches='tight')
 
-        for ax in axs:
-            ax.grid(True)
-            ax.set_facecolor('#f8f8f8')
-        plt.tight_layout()
+        # Figure 2: Input pulse and Frequency Chirp
+        fig2, axs2 = create_figure(rows=2, cols=1, is_subplot=True)
 
-        if chirp:
-            plt.savefig("plots/gain_switched_pulse_with_chirp.png",
-                        dpi=300, bbox_inches='tight')
-        else:
-            plt.savefig("plots/gain_switched_pulse_without_chirp.png",
-                        dpi=300, bbox_inches='tight')
+        axs2[0].plot(t * 1e12, I_pulse * 1e3, linewidth=2)
+        style_axis(axs2[0],
+                   ylabel="Current (mA)",
+                   title="Current Pulse (mA)",
+                   legend=False)
+        axs2[0].set_xlim([-1.5 * pulse_duration * 1e12,
+                         1.5 * pulse_duration * 1e12])
+
+        axs2[1].plot(t * 1e12, chirp_inst * 1e-9, linewidth=2)
+        style_axis(axs2[1],
+                   xlabel="Time (ps)",
+                   ylabel="Chirp (GHz)",
+                   title="Frequency Chirp vs Time",
+                   legend=False)
+        axs2[1].set_ylim([-60, 80])
+        axs2[1].set_xlim([-1.5 * pulse_duration * 1e12,
+                         1.5 * pulse_duration * 1e12])
+        axs2[1].legend(["Chirped" if chirp else "Unchirped"])
+
+        plt.savefig(
+            f"plots/gain_switched_pulse_fig2_{suffix}.png", dpi=300, bbox_inches='tight')
 
         # plt.show()
 
@@ -679,148 +701,162 @@ class LaserModel:
         return freq_1, freq_2
 
     def analyze_frequency_response(self, freq, I_dc=None, I_ac=None):
-        """
-        Analyzes laser response at a specific frequency.
-        Generates plots showing carrier and photon density variations.
-        """
+        """Analyzes laser response at a specific frequency."""
+        colors = setup_plotting_style()
+
         I_dc = I_dc if I_dc is not None else self.config.I_DC
         I_ac = I_ac if I_ac is not None else self.config.I_AC
+
         N_dc, S_dc = self.calculate_steady_state(I_dc)
         _, S_tot = self.calculate_steady_state(I_dc + I_ac)
         _, _, _, sol_ac = self.simulate_single_frequency_response(
             (freq, N_dc, S_dc, S_tot, I_dc, I_ac, 'fft'))
-        fig, ax1 = plt.subplots(figsize=(12, 8))
+
+        fig, ax1 = create_figure()
         ax2 = ax1.twinx()
-        ln1 = ax1.plot(sol_ac.t * 1e9, sol_ac.y[0] - N_dc, 'b-',
-                       label="Carrier Density", linewidth=2)
-        ax1.set_xlabel("Time (ns)")
-        ax1.set_ylabel("ΔN (cm⁻³)", color='b')
-        ax1.tick_params(axis='y', labelcolor='b')
-        ln2 = ax2.plot(sol_ac.t * 1e9, sol_ac.y[1] - S_dc, 'r-',
-                       label="Photon Density", linewidth=2)
-        ax2.set_ylabel("ΔS (cm⁻³)", color='r')
-        ax2.tick_params(axis='y', labelcolor='r')
+
+        ln1 = ax1.plot(sol_ac.t * 1e9, sol_ac.y[0] - N_dc,
+                       color=colors[0], linewidth=2,
+                       label="Carrier Density")
+        ax1.set_ylabel("ΔN (cm⁻³)", color=colors[0])
+        ax1.tick_params(axis='y', labelcolor=colors[0])
+
+        ln2 = ax2.plot(sol_ac.t * 1e9, sol_ac.y[1] - S_dc,
+                       color=colors[1], linewidth=2,
+                       label="Photon Density")
+        ax2.set_ylabel("ΔS (cm⁻³)", color=colors[1])
+        ax2.tick_params(axis='y', labelcolor=colors[1])
+
         lns = ln1 + ln2
         labs = [l.get_label() for l in lns]
         ax1.legend(lns, labs, loc='upper right')
-        plt.title(f"Laser Response at {freq / 1e9:.2f} GHz")
+
+        style_axis(ax1,
+                   xlabel='Time (ns)',
+                   title=f"Laser Response at {freq / 1e9:.2f} GHz",
+                   legend=False)
+
         plt.tight_layout()
 
     def plot_ramp_response(self, t, N, S, t_steps, I_steps):
-        """
-        Plots the laser response to a ramped current input.
-        """
-        plt.figure(figsize=(12, 8))
-        plt.suptitle('Transient Response for Ramp current', fontsize=16)
-        plt.subplot(3, 1, 1)
-        plt.plot(t_steps * 1e9, I_steps * 1e3, 'r.-', linewidth=2)
-        plt.xlabel('Time (ns)')
-        plt.ylabel('Current (mA)')
-        plt.grid(True)
-        plt.subplot(3, 1, 2)
-        plt.plot(t * 1e9, N / self.physics.N_tr, 'b-', linewidth=2)
-        plt.xlabel('Time (ns)')
-        plt.ylabel('Carrier Density (N/N$_{tr}$)')
-        plt.grid(True)
-        plt.subplot(3, 1, 3)
-        plt.plot(t * 1e9, S, 'g-', linewidth=2)
-        plt.xlabel('Time (ns)')
-        plt.ylabel('Photon Density (cm$^{-3}$)')
-        plt.grid(True)
-        plt.tight_layout()
+        """Plots the laser response to a ramped current input."""
+        colors = setup_plotting_style()
+        fig, (ax1, ax2) = create_figure(rows=2, cols=1, is_subplot=True)
+
+        ax1.plot(t * 1e9, N / self.physics.N_tr,
+                 linewidth=2, label='Carrier Density')
+        ax1_twin = ax1.twinx()
+        ax1_twin.plot(t_steps * 1e9, I_steps * 1e3, '--',
+                      color='gray', linewidth=1, label='Input Current')
+        style_axis(ax1,
+                   ylabel='Carrier Density (N/N$_{tr}$)',
+                   legend=True)
+        ax1_twin.set_ylabel('Current (mA)', color='gray')
+        ax1_twin.tick_params(axis='y', labelcolor='gray')
+
+        ax2.plot(t * 1e9, S, linewidth=2, label='Photon Density')
+        ax2_twin = ax2.twinx()
+        ax2_twin.plot(t_steps * 1e9, I_steps * 1e3, '--',
+                      color='gray', linewidth=1, label='Input Current')
+        style_axis(ax2,
+                   xlabel='Time (ns)',
+                   ylabel='Photon Density (cm$^{-3}$)',
+                   legend=True)
+        ax2_twin.set_ylabel('Current (mA)', color='gray')
+        ax2_twin.tick_params(axis='y', labelcolor='gray')
+
         plt.savefig('plots/transient_response_ramp.png',
                     dpi=300, bbox_inches='tight')
 
     def plot_step_response(self, t, N_solutions, S_solutions, I_values):
-        """
-        Plots the laser response to step current inputs.
-        """
-        colors = plt.cm.viridis(np.linspace(0, 1, len(I_values)))
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        fig.suptitle('Transient Response for Different Step Current Values',
-                     fontsize=16, y=0.95)
-        for i in range(len(I_values)):
-            ax1.plot(t * 1e9, N_solutions[i, :] / self.physics.N_tr, color=colors[i],
-                     linewidth=2, label=f'I = {I_values[i]*1e3:.1f} mA')
-        ax1.set_xlabel('Time (ns)', fontsize=12)
-        ax1.set_ylabel('Carrier Density (N/N$_{tr}$)', fontsize=12)
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-        ax1.set_title('Carrier Density Evolution', fontsize=14)
-        for i in range(len(I_values)):
-            ax2.plot(t * 1e9, S_solutions[i, :], color=colors[i],
-                     linewidth=2, label=f'I = {I_values[i]*1e3:.1f} mA')
-        ax2.set_xlabel('Time (ns)', fontsize=12)
-        ax2.set_ylabel('Photon Density (cm$^{-3}$)', fontsize=12)
-        ax2.grid(True, alpha=0.3)
-        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-        ax2.set_title('Photon Density Evolution', fontsize=14)
-        plt.tight_layout(rect=[0, 0, 0.85, 0.95])
+        """Plots the laser response to step current inputs."""
+        colors = setup_plotting_style()
+        fig, (ax1, ax2) = create_figure(rows=2, cols=1, is_subplot=True)
+
+        for i, I_value in enumerate(I_values):
+            ax1.plot(t * 1e9, N_solutions[i, :] / self.physics.N_tr,
+                     linewidth=2,
+                     label=f'I = {I_value*1e3:.1f} mA')
+
+            ax2.plot(t * 1e9, S_solutions[i, :],
+                     linewidth=2,
+                     label=f'I = {I_value*1e3:.1f} mA')
+
+        style_axis(ax1,
+                   xlabel='Time (ns)',
+                   ylabel='Carrier Density (N/N$_{tr}$)'
+                   )
+
+        style_axis(ax2,
+                   xlabel='Time (ns)',
+                   ylabel='Photon Density (cm$^{-3}$)')
+
         plt.savefig('plots/transient_response_step.png',
                     dpi=300, bbox_inches='tight')
 
     def plot_PI_curve(self, P_solutions, I_values):
-        """
-        Plots the power-current (P-I) characteristic curve.
-        """
-        plt.figure(figsize=(10, 6))
-        P_steady = P_solutions
-        plt.plot(I_values * 1e3, P_steady * 1e3, 'b-o', linewidth=2)
-        plt.xlabel('Current (mA)', fontsize=12)
-        plt.ylabel('Output Power (mW)', fontsize=12)
-        plt.title('Power-Current (P-I) Characteristic', fontsize=14)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
+        """Plots the power-current (P-I) characteristic curve."""
+        setup_plotting_style()
+        fig, ax = create_figure()
+
+        ax.plot(I_values * 1e3, P_solutions * 1e3, linewidth=2)
+
+        style_axis(ax,
+                   xlabel='Current (mA)',
+                   ylabel='Output Power (mW)',
+                   title='Power-Current (P-I) Characteristic',
+                   legend=False)
+
         plt.savefig('plots/power_current_characteristic.png',
                     dpi=300, bbox_inches='tight')
 
-    def plot_optical_spectrum(self, ax, freqs, fft_magnitude, I_ac, color):
-        """
-        Plots normalized optical power spectrum.
-        """
-        ax.plot(freqs / 1e9, fft_magnitude / np.max(fft_magnitude), '-',
-                color=color, linewidth=1.5)
-        ax.set_ylabel("Power (Normalized)")
-        ax.set_title(f"$I_p$ = {I_ac * 1e3:.1f} mA")
+    def plot_optical_spectrum(self, ax, freqs, fft_magnitude, I_ac, ):
+        """Plots normalized optical power spectrum."""
+        ax.plot(freqs / 1e9, fft_magnitude / np.max(fft_magnitude),
+                linewidth=2,
+                label=f"$I_p$ = {I_ac * 1e3:.1f} mA")
+
+        style_axis(ax,
+                   ylabel="Power (Normalized)",
+                   title=f"$I_p$ = {I_ac * 1e3:.1f} mA")
+
         ax.set_xlim([-4, 4])
         ax.set_ylim([0, 1])
-        ax.grid(True, alpha=0.3)
-        # Set the background to light gray for better contrast
-        ax.set_facecolor('#f8f8f8')
 
     def plot_dc_characteristics(self, I_dc, N_dc, S_dc, N_tr_temp=None):
+        """Plots DC characteristics with carrier and photon density."""
+        colors = setup_plotting_style()
         N_tr = self.physics.N_tr if N_tr_temp is None else N_tr_temp
         I_th = self.calculate_threshold_current(self.config.I_DC)
-        plt.figure(figsize=(12, 8))
-        plt.suptitle('DC Characteristics', fontsize=16, y=1.02)
-        plt.subplot(2, 1, 1)
-        plt.plot(I_dc * 1e3, N_dc / N_tr, 'b-',
-                 linewidth=2, label='Carrier Density')
-        plt.axvline(x=I_th * 1e3, color='gray', linestyle='--',
+
+        fig, (ax1, ax2) = create_figure(rows=2, cols=1, is_subplot=True)
+
+        # Carrier density plot
+        ax1.plot(I_dc * 1e3, N_dc / N_tr, linewidth=2, label='Carrier Density')
+        ax1.axvline(x=I_th * 1e3, color='gray', linestyle='--',
                     linewidth=1, label=f'Threshold Current ({I_th * 1e3:.2f} mA)')
-        plt.xlabel('Current (mA)', fontsize=12)
-        plt.ylabel('Carrier Density (N/N$_{tr}$)', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.title('Carrier Density vs Current', fontsize=14)
-        plt.legend()
-        plt.subplot(2, 1, 2)
-        plt.plot(I_dc * 1e3, S_dc, 'g-', linewidth=2, label='Photon Density')
-        plt.axvline(x=I_th * 1e3, color='gray', linestyle='--',
+
+        style_axis(ax1,
+                   xlabel='Current (mA)',
+                   ylabel='Carrier Density (N/N$_{tr}$)',
+                   title='Carrier Density vs Current')
+
+        # Photon density plot
+        ax2.plot(I_dc * 1e3, S_dc, linewidth=2, label='Photon Density')
+        ax2.axvline(x=I_th * 1e3, color='gray', linestyle='--',
                     linewidth=1, label=f'Threshold Current ({I_th * 1e3:.2f} mA)')
-        plt.xlabel('Current (mA)', fontsize=12)
-        plt.ylabel('Photon Density (cm$^{-3}$)', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.title('Photon Density vs Current', fontsize=14)
-        plt.legend()
 
         # Add secondary y-axis in log scale
-        ax = plt.gca()
-        ax2 = ax.twinx()
-        ax2.plot(I_dc * 1e3, S_dc, 'r--', linewidth=1)
-        ax2.set_yscale('log')
-        ax2.set_ylabel('Photon Density (log scale)',
-                       fontsize=12, color='r')
-        ax2.tick_params(axis='y', labelcolor='r')
+        ax2_log = ax2.twinx()
+        ax2_log.plot(I_dc * 1e3, S_dc, '--', color=colors[1], linewidth=1)
+        ax2_log.set_yscale('log')
+        ax2_log.set_ylabel('Photon Density (log scale)', color=colors[1])
+        ax2_log.tick_params(axis='y', labelcolor=colors[1])
+
+        style_axis(ax2,
+                   xlabel='Current (mA)',
+                   ylabel='Photon Density (cm$^{-3}$)',
+                   title='Photon Density vs Current')
 
         plt.tight_layout()
         plt.savefig('plots/dc_characteristics.png',

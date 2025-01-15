@@ -1,5 +1,7 @@
 # Description: Main script to run laser simulations and generate analysis plots.
 
+from typing import Tuple, List, Optional
+import matplotlib as mpl
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
@@ -7,6 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from laser_model import LaserModel, SimulationConfig, PhysicsConstants
+from cycler import cycler
+from plotting_utils import setup_plotting_style, create_figure, style_axis
 
 
 def run_dc_analysis(laser):
@@ -16,11 +20,12 @@ def run_dc_analysis(laser):
     print(f"Photon density = {S_dc:.2e} cm^-3")
 
 
-def run_ac_analysis(laser, method='fft'):  # method = 'peak2peek', 'hilbert', or 'fft'
+def run_ac_analysis(laser, method='fft'):
     print("\nAC: Analyzing multiple DC currents...")
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    colors = setup_plotting_style()
 
-    fig_dc, (ax_s_dc, ax_n_dc) = plt.subplots(2, 1, figsize=(12, 8))
+    # Create subplot figure for DC analysis
+    fig_dc, (ax_s_dc, ax_n_dc) = create_figure(rows=2, cols=1, is_subplot=True)
 
     for i, I_dc_value in enumerate(laser.config.DC_CURRENTS):
         print(f"\nAnalyzing DC current: {I_dc_value * 1000:.1f} mA")
@@ -28,40 +33,43 @@ def run_ac_analysis(laser, method='fft'):  # method = 'peak2peek', 'hilbert', or
             I_dc=I_dc_value, method=method)
         response_db_s = 20 * np.log10(response_amp_S / response_amp_S[1])
         response_db_n = 20 * np.log10(response_amp_N / response_amp_N[1])
+
         interp_func_s = interp1d(freq_result, response_db_s, kind='cubic')
         interp_func_n = interp1d(freq_result, response_db_n, kind='cubic')
-        freq_smooth = np.logspace(np.log10(freq_result[0]), np.log10(
-            freq_result[-1]), laser.config.INTERP_POINTS)
+        freq_smooth = np.logspace(np.log10(freq_result[0]),
+                                  np.log10(freq_result[-1]),
+                                  laser.config.INTERP_POINTS)
         resp_s_smooth = interp_func_s(freq_smooth)
         resp_n_smooth = interp_func_n(freq_smooth)
-        ax_s_dc.semilogx(freq_smooth, resp_s_smooth, color=colors[i],
-                         linewidth=2, label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_s_smooth)]/1e9:.2f} GHz')
-        ax_n_dc.semilogx(freq_smooth, resp_n_smooth, color=colors[i],
-                         linewidth=2, label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_n_smooth)]/1e9:.2f} GHz')
+
+        ax_s_dc.semilogx(freq_smooth, resp_s_smooth,
+                         linewidth=2,
+                         label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_s_smooth)]/1e9:.2f} GHz')
+        ax_n_dc.semilogx(freq_smooth, resp_n_smooth,
+                         linewidth=2,
+                         label=f'I_DC = {I_dc_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_n_smooth)]/1e9:.2f} GHz')
+
         freq1, freq2 = laser.calculate_relaxation_oscillation(I_dc_value)
         print(
             f"Estimated Relaxation frequency for I_DC = {I_dc_value * 1000:.1f} : {freq1/1e9:.2f} or {freq2/1e9:.2f} GHz")
 
-    ax_s_dc.grid(True, which="both", ls="-", alpha=0.2)
-    ax_s_dc.grid(True, which="major", ls="-", alpha=0.5)
-    ax_s_dc.set_xlabel('Frequency (Hz)', fontsize=12)
-    ax_s_dc.set_ylabel('Photon Response (dB)', fontsize=12)
-    ax_s_dc.set_title('Small Signal Frequency Response vs. DC Current (S)')
-    ax_s_dc.legend(fontsize=10, loc='lower left', bbox_to_anchor=(0.02, 0.02))
+    style_axis(ax_s_dc,
+               xlabel='Frequency (Hz)',
+               ylabel='Photon Response (dB)'
+               )
 
-    ax_n_dc.grid(True, which="both", ls="-", alpha=0.2)
-    ax_n_dc.grid(True, which="major", ls="-", alpha=0.5)
-    ax_n_dc.set_xlabel('Frequency (Hz)', fontsize=12)
-    ax_n_dc.set_ylabel('Carrier Response (dB)', fontsize=12)
-    ax_n_dc.set_title('Small Signal Frequency Response vs. DC Current (N)')
-    ax_n_dc.legend(fontsize=10, loc='lower left', bbox_to_anchor=(0.02, 0.02))
+    style_axis(ax_n_dc,
+               xlabel='Frequency (Hz)',
+               ylabel='Carrier Response (dB)'
+               )
 
     fig_dc.tight_layout()
     plt.savefig('plots/AC_multiple_large_signal.png',
                 dpi=300, bbox_inches='tight')
 
+    # AC current analysis
     print("\nAC: Analyzing multiple AC currents...")
-    fig_ac, (ax_s_ac, ax_n_ac) = plt.subplots(2, 1, figsize=(12, 8))
+    fig_ac, (ax_s_ac, ax_n_ac) = create_figure(rows=2, cols=1, is_subplot=True)
 
     for i, I_ac_value in enumerate(laser.config.AC_CURRENTS):
         print(f"\nAnalyzing AC current: {I_ac_value * 1000:.1f} mA")
@@ -69,30 +77,29 @@ def run_ac_analysis(laser, method='fft'):  # method = 'peak2peek', 'hilbert', or
             I_ac=I_ac_value, method=method)
         response_db_s = 20 * np.log10(response_amp_S / response_amp_S[1])
         response_db_n = 20 * np.log10(response_amp_N / response_amp_N[1])
+
         interp_func_s = interp1d(freq_result, response_db_s, kind='cubic')
         interp_func_n = interp1d(freq_result, response_db_n, kind='cubic')
-        freq_smooth = np.logspace(np.log10(freq_result[0]), np.log10(
-            freq_result[-1]), laser.config.INTERP_POINTS)
+        freq_smooth = np.logspace(np.log10(freq_result[0]),
+                                  np.log10(freq_result[-1]),
+                                  laser.config.INTERP_POINTS)
         resp_s_smooth = interp_func_s(freq_smooth)
         resp_n_smooth = interp_func_n(freq_smooth)
-        ax_s_ac.semilogx(freq_smooth, resp_s_smooth, color=colors[i],
-                         linewidth=2, label=f'I_AC = {I_ac_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_s_smooth)]/1e9:.2f} GHz')
-        ax_n_ac.semilogx(freq_smooth, resp_n_smooth, color=colors[i],
-                         linewidth=2, label=f'I_AC = {I_ac_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_n_smooth)]/1e9:.2f} GHz')
 
-    ax_s_ac.grid(True, which="both", ls="-", alpha=0.2)
-    ax_s_ac.grid(True, which="major", ls="-", alpha=0.5)
-    ax_s_ac.set_xlabel('Frequency (Hz)', fontsize=12)
-    ax_s_ac.set_ylabel('Photon Response (dB)', fontsize=12)
-    ax_s_ac.set_title('Small Signal Frequency Response vs. AC Current (S)')
-    ax_s_ac.legend(fontsize=10, loc='lower left', bbox_to_anchor=(0.02, 0.02))
+        ax_s_ac.semilogx(freq_smooth, resp_s_smooth,
+                         linewidth=2,
+                         label=f'I_AC = {I_ac_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_s_smooth)]/1e9:.2f} GHz')
+        ax_n_ac.semilogx(freq_smooth, resp_n_smooth,
+                         linewidth=2,
+                         label=f'I_AC = {I_ac_value * 1000:.1f} mA, f_RO = {freq_smooth[np.argmax(resp_n_smooth)]/1e9:.2f} GHz')
 
-    ax_n_ac.grid(True, which="both", ls="-", alpha=0.2)
-    ax_n_ac.grid(True, which="major", ls="-", alpha=0.5)
-    ax_n_ac.set_xlabel('Frequency (Hz)', fontsize=12)
-    ax_n_ac.set_ylabel('Carrier Response (dB)', fontsize=12)
-    ax_n_ac.set_title('Small Signal Frequency Response vs. AC Current (N)')
-    ax_n_ac.legend(fontsize=10, loc='lower left', bbox_to_anchor=(0.02, 0.02))
+    style_axis(ax_s_ac,
+               xlabel='Frequency (Hz)',
+               ylabel='Photon Response (dB)')
+
+    style_axis(ax_n_ac,
+               xlabel='Frequency (Hz)',
+               ylabel='Carrier Response (dB)')
 
     fig_ac.tight_layout()
     plt.savefig('plots/AC_multiple_small_signal.png',
@@ -122,8 +129,9 @@ def run_pi_analysis(laser):
 
 def run_temperature_analysis(laser):
     print("\nAnalyzing Temperature Dependence...")
-    plt.figure(figsize=(12, 8))
-    plt.suptitle('Temperature Dependence of Output Power', fontsize=16)
+    colors = setup_plotting_style()
+
+    fig, ax = create_figure()
     T = np.linspace(200, 350, 6)
     N_tr0 = 1e18
 
@@ -131,18 +139,17 @@ def run_temperature_analysis(laser):
         N_tr = N_tr0 * np.exp((temp-300)/50)
         I_dc, N_dc, S_dc = laser.perform_dc_analysis(N_tr)
         P_out = laser.calculate_optical_power(S_dc)
-        plt.plot(I_dc * 1e3, P_out * 1e3,
-                 label=f'T = {temp:.0f} K',
-                 linewidth=2)
+        ax.plot(I_dc * 1e3, P_out * 1e3,
+                linewidth=2,
+                label=f'T = {temp:.0f} K')
 
-    plt.xlabel("Current (mA)", fontsize=12)
-    plt.ylabel("Output Power (mW)", fontsize=12)
-    plt.title("Output Power vs Current at Different Temperatures")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper left', fontsize=10, framealpha=0.9,
-               title='Temperature', title_fontsize=12)
+    style_axis(ax,
+               xlabel="Current (mA)",
+               ylabel="Output Power (mW)",
+               legend=True)
+
     plt.tight_layout()
-    plt.savefig('plots/figure4_temperature_dependencies.png',
+    plt.savefig('plots/temperature_dependencies.png',
                 dpi=300, bbox_inches='tight')
 
 
@@ -168,10 +175,10 @@ def run_phase_modulation(laser):
 
 def run_pulse_chirping(laser):
     print("Testing super-Gaussian pulse chirping with chirp = True")
-    laser.simulate_supergaussian_pulse_chirping(chirp=True)
+    # laser.simulate_supergaussian_pulse_chirping(chirp=True)
     laser.simulate_gain_switched_pulse(chirp=True)
     print("Testing super-Gaussian pulse chirping with chirp = False")
-    laser.simulate_supergaussian_pulse_chirping(chirp=False)
+    # laser.simulate_supergaussian_pulse_chirping(chirp=False)
     laser.simulate_gain_switched_pulse(chirp=False)
 
 
@@ -183,7 +190,7 @@ def main():
     config = SimulationConfig()
     physics = PhysicsConstants()
     laser = LaserModel(config, physics)
-
+    laser.calculate_threshold_current()
     run_dc_analysis(laser)
     # method = 'peak2peak', 'hilbert', or 'fft'
     run_ac_analysis(laser, method='hilbert')
